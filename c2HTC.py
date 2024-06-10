@@ -1179,8 +1179,10 @@ class HTC:
         Nk = len(diags)
         ada_p = np.array([x * np.ones(Nk) for x in diags])
         ada_k = ada_p.T
-        mask = np.abs(ada)**2 > ada_p * ada_k + delta # delta for numerical approx.
-        return mask        
+        #mask = np.abs(ada)**2 > ada_p * ada_k + delta # delta for numerical approx.
+        diff =   ada_p * ada_k - np.abs(ada)**2
+        mask = diff < - delta # delta for numerical tolerance
+        return mask, diff 
 
 def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True):
     # 2024-04-16
@@ -1196,6 +1198,7 @@ def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True):
     gvpops_final = np.zeros((num_pumps, params['Nnu'], Nk), dtype=float) # electronic ground state
     adaga_final = np.zeros((num_pumps, Nk, Nk), dtype=complex) 
     adaga_final_mask = np.zeros((num_pumps, Nk, Nk), dtype=bool) 
+    adaga_final_diff = np.zeros((num_pumps, Nk, Nk), dtype=bool) 
     n_nm_final = np.zeros((num_pumps, Nk, Nk), dtype=complex) 
     span_final = np.zeros((num_pumps, Nk), dtype=complex) 
     JLs_final = np.zeros((num_pumps, Nk), dtype=complex)
@@ -1217,9 +1220,10 @@ def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True):
         Js_final[i, :] = JRs_final[i] - JLs_final[i]
         adaga_final[i, :, :] = ada #fftshift(ada)
         if cauchy_mask:
-            adaga_final_mask[i,:,:] = htc.cauchy_mask(ada)
+            adaga_final_mask[i,:,:], adaga_final_diff[i,:,:] = htc.cauchy_mask(ada)
         else:
             adaga_final_mask[i,:,:] = np.zeros(ada.shape, dtype=bool) # no masked values
+            adaga_final_diff[i,:,:] = np.zeros(ada.shape, dtype=bool)
         an_l = fft(al, axis=1) # index i, then k, then n ! (see EoMs). No normalisation (choice)
         #print(contract('imn,i->mn', htc.gp.basis[htc.gp.indices[1]], htc.ocoeffs['sp_l']))
         an_spn = np.diag(contract('imn,i->mn', an_l, htc.ocoeffs['sp_l']))
@@ -1448,6 +1452,6 @@ if __name__ == '__main__':
             }
     #pump_strengths = np.logspace(-3, 0.6, num=20) # set pump strength magnitudes for input-output curve
     pump_strengths = np.logspace(-2, 2, num=5) # set pump strength magnitudes for input-output curve
-    #plot_input_output(tb_parameters, pump_strengths, tend=100) # all other parameters fixed
-    plot_dynamics_and_final_state(tb_parameters) 
+    plot_input_output(tb_parameters, pump_strengths, tend=100) # all other parameters fixed
+    #plot_dynamics_and_final_state(tb_parameters) 
 
