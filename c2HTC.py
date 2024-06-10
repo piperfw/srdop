@@ -62,7 +62,7 @@ class HTC:
             'T':0.026, # k_B T in eV (.026=302K)
             'gam_nu': 1e-03, # vibrational damping rate
             'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
-            'model': 'plasmonic', # or 'tight-binding' - sets the dispersion
+            'model': 'plasmonic', # or 'tight-binding', 'two-node' - sets the dispersion ('two-node' is tight-binding but only coupling points at k= \pm \pi/(2 Delta r) [N.B. assumes all but those entires are zero in the initial state]
             }
 
     @classmethod
@@ -214,7 +214,7 @@ class HTC:
         gp = self.gp
         params = self.params
         rates = self.rates
-        Nm, Nk, Nnu = self.Nm, self.Nk, self.Nnu
+        Nm, Nk, Nnu, Q0 = self.Nm, self.Nk, self.Nnu, self.Q0
         Hvib = Boson(Nnu)
         b, bd, bn, bi = Hvib.b, Hvib.bd, Hvib.n, Hvib.i
         sm, sp, sz, si = Pauli.m, Pauli.p, Pauli.z, Pauli.i
@@ -340,6 +340,30 @@ class HTC:
         ocoeffs['evpops'] = [self.gp.get_coefficients(ev_op, sgn=0, eye=True) for ev_op in ev_ops]
         # assign to instance variables
         self.consts, self.coeffs, self.ocoeffs = consts, coeffs, ocoeffs
+        # Construct masks used in two-node model
+        if self.params['model'] == 'two-node':
+            assert Q0%2==0, 'For two-node mode QO must be even'
+            Qhalf = Q0//2
+            QL, QR = Q0-Qhalf, Q0+Qhalf
+            logger.info(f'Quarter mode at {QL} compared to N_k/4 = {Nk/4} has omega_k = '\
+                    f'{self.omega(self.Ks[QL]):.2g}')
+            mask_1d = np.ones(Nk, dtype=bool)
+            mask_1d[QL], mask_1d[QR] = False, False
+            mask_2d = np.ones((Nk, Nk), dtype=bool)
+            mask_2d[QL] = mask_1d
+            mask_2d[QR] = mask_1d
+            self.mode_mask = {}
+            self.mode_mask['ada'] = fftshift(mask_2d)
+            self.mode_mask['ada_args'] = np.where(self.mode_mask['ada'])
+            mask_kn = (np.zeros((Nk,Nk), dtype=bool) + mask_1d).T # only if Nnu=1
+            mask_ikn = np.zeros(self.state_dic['al']['shape'], dtype=bool)
+            mask_ikn[:] = mask_kn # at each i mask everything except rows K=QL, K=QR
+            self.mode_mask['al'] = fftshift(mask_ikn, axes=1)
+            self.mode_mask['al_args'] = np.where(self.mode_mask['al'])
+            self.QL, self.QR = QL, QR
+        else:
+            self.QL, self.QR, self.mode_mask = None, None, None
+
 
     def omega_single(self, K):
         if K == 0:
@@ -371,7 +395,7 @@ class HTC:
         return - 2 * self.params['t'] * np.cos(kdr)
 
     def omega(self, Ks):
-        if self.params['model'] == 'tight-binding':
+        if self.params['model'] in ['tight-binding', 'two-node']:
             return self.omega_hop(Ks)
         Ks = np.atleast_1d(Ks)
         return np.array([self.omega_single(K) for K in Ks])
@@ -543,6 +567,7 @@ class HTC:
         non-zero values in place by self.record_dynamics during the computation
         """
         Nt = self.num_t
+        aTMks = np.zeros((Nt, 2,2), dtype=complex) # two-mode model
         nPs = np.zeros((Nt, self.Nk), dtype=float)
         nKs = np.zeros((Nt, self.Nk), dtype=float)
         nMs = np.zeros((Nt, self.Nk), dtype=float)
@@ -555,6 +580,7 @@ class HTC:
         #vpops = np.zeros((Nt, self.Nk, self.Nnu), dtype=float)
         self.dynamics = {'t': self.t_fs,
                          'r': self.rs, 
+                         'aTMk': aTMks,
                          'nP': nPs,
                          'nK': nKs,
                          'nM': nMs,
@@ -592,7 +618,16 @@ class HTC:
         self.calculate_vibronic(t_index, l) # vibrational populations for emitters in each gap
 
     def calculate_photonic(self, t_index, ada):
-        nk = fftshift(np.diag(ada))
+        if self.params['model'] == 'two-node':
+            aTMk = np.zeros((2,2), dtype=complex)
+            # Better: precalculate the four-indices and do in one assignment 
+            ada_shift = ifftshift(ada)
+            aTMk[0,0] = ada_shift[self.QL, self.QL]
+            aTMk[0,1] = ada_shift[self.QL, self.QR]
+            aTMk[1,0] = ada_shift[self.QR, self.QL]
+            aTMk[1,1] = ada_shift[self.QR, self.QR]
+            self.dynamics['aTMk'][t_index] = aTMk
+        nk = ifftshift(np.diag(ada))
         self.check_real(t_index, nk, 'Photon number (k-space)')
         alpha = ifft(ada, axis=0) # including 1/N_k normalisation!
         dft2 = fft(alpha, axis=-1) # real space so no fftshift... (start with position 0...)
@@ -713,6 +748,10 @@ class HTC:
         """Equations of motion as in cumulant_in_code.pdf"""
         C = self.coeffs
         ada, l, al, ll = self.split_reshape_return(state)
+        # If two-node model check relevant elements are absolutely zero
+        if self.params['model'] == 'two-node':
+            assert np.allclose(ada[self.mode_mask['ada_args']], 0.0)
+            assert np.allclose(al[self.mode_mask['al_args']], 0.0)
 #        if np.isclose(t%40, 0.0, atol=0.25):
 #            print('Maxes: ada {:.1g} l {:.1g} al {:.1g} ll {:.1g}'.format(*[np.max(np.abs(X)) for X in [ada, l, al, ll]]))
         # Calculate DFTs
@@ -739,6 +778,10 @@ class HTC:
                 + contract('aj,am,imn->ijnm', C['43_01'], l, d) \
                 + contract('ai,an,jnm->ijnm', C['44_01'], l, d.conj())
         dy_rescale_int = np.zeros(1)
+        # if model two-mode, mask all but two photon modes
+        if self.params['model'] == 'two-node':
+            dy_ada2[self.mode_mask['ada_args']] = 0.0
+            dy_al2[self.mode_mask['al_args']] = 0.0 
         # flatten and concatenate to match input state structure (1d array)
         dy_state = np.concatenate((dy_ada2, dy_l, dy_al2, dy_ll, dy_rescale_int), axis=None)
         return dy_state
@@ -894,23 +937,37 @@ class HTC:
 
     def plot_dynamics(self):
         fig, axes = plt.subplots(2, 2, figsize=(8,8), constrained_layout=True)
-        axes[0,0].set_xlabel(self.labels['rn'])
-        axes[0,0].set_ylabel(self.labels['t_fs'])
-        axes[0,1].set_xlabel(self.labels['rn'])
-        axes[0,1].set_ylabel(self.labels['t_fs'])
         t_fs = self.dynamics['t']
-        axes[0,0].set_title(self.labels['ph_rn'])
-        axes[0,1].set_title(self.labels['mol_rn0'])
         extent = [0, 1.01*self.params['L']*1e-3, t_fs[0], t_fs[-1]]
         cm = colormaps['coolwarm'] 
         my_im = lambda axis, vals: axis.imshow(vals, origin='lower', aspect='auto',
                                            interpolation='none', extent=extent, cmap=cm)
-        im0 = my_im(axes[0,0], self.dynamics['nP'])
-        #zeroed_nM = self.dynamics['nM'] - self.dynamics['nM'][0,:] # subtract initial pops
-        #im1 = my_im(axes[0,1], zeroed_nM)
-        im1 = my_im(axes[0,1], self.dynamics['nM'])
-        cbar0 = fig.colorbar(im0, ax=axes[0,0], aspect=20)
-        cbar1 = fig.colorbar(im1, ax=axes[0,1], aspect=20)
+        if self.params['model'] == 'two-node':
+            #print(self.dynamics['nK'][-1])
+            # N.B. nK was already ifftshifted to -Q0,...0,...Q0 ordering shifted
+            axes[0,0].plot(t_fs, self.dynamics['nK'][:,self.QL], label=r'$1=-Q_{\text{half}}$') # NON-ZERO
+            axes[0,0].plot(t_fs, self.dynamics['nK'][:,self.QR], label=r'$2=+Q_{\text{half}}$') # NON-ZERO
+            axes[0,0].legend(title=r'$k$')
+            axes[0,0].set_xlabel(self.labels['t_fs'])
+            axes[0,0].set_title(r'$n_k$')
+            axes[0,1].plot(t_fs, self.dynamics['aTMk'][:,0,1].real, label=r'Re')
+            axes[0,1].plot(t_fs, self.dynamics['aTMk'][:,1,0].imag, label=r'Im')
+            axes[0,1].legend()
+            axes[0,1].set_xlabel(self.labels['t_fs'])
+            axes[0,1].set_title(r'$\langle a^\dagger_{12} a_{21}^{\vphantom{\dagger}} \rangle$')
+        else:
+            axes[0,1].set_title(self.labels['mol_rn0'])
+            im0 = my_im(axes[0,0], self.dynamics['nP'])
+            cbar0 = fig.colorbar(im0, ax=axes[0,0], aspect=20)
+            axes[0,0].set_xlabel(self.labels['rn'])
+            axes[0,0].set_ylabel(self.labels['t_fs'])
+            axes[0,0].set_title(self.labels['ph_rn'])
+            axes[0,1].set_xlabel(self.labels['rn'])
+            axes[0,1].set_ylabel(self.labels['t_fs'])
+            #zeroed_nM = self.dynamics['nM'] - self.dynamics['nM'][0,:] # subtract initial pops
+            #im1 = my_im(axes[0,1], zeroed_nM)
+            im1 = my_im(axes[0,1], self.dynamics['nM'])
+            cbar1 = fig.colorbar(im1, ax=axes[0,1], aspect=20)
         nPh_tots = np.sum(self.dynamics['nP'], axis=-1)
         nM_tots = np.sum(self.dynamics['nM'], axis=-1)
         nB_tots = np.sum(self.dynamics['nB'], axis=-1)
@@ -936,7 +993,8 @@ class HTC:
         ax3.plot(smooth_t, smooth_msd*rn_scale,
                  label=r'\rm{{Lowpass (}}\({:.1g} \text{{\rm{{fs}}}}^{{-1}}\)\rm{{)}}'.format(cutoffFS))
         popt = fit[1]
-        axes[0,0].plot(smooth_msd*rn_scale+self.rs[self.Q0], smooth_t, ls='--', color='lime')
+        if self.params['model'] != 'two-node':
+            axes[0,0].plot(smooth_msd*rn_scale+self.rs[self.Q0], smooth_t, ls='--', color='lime')
         offset = max(0, early_i1-1)
         end = offset + early_i2-early_i1
         ax3.plot(smooth_t[offset:end], fit[0][:early_i2-early_i1]*rn_scale, ls='--',
@@ -1041,21 +1099,33 @@ class HTC:
         fig, axes = plt.subplots(1,2, figsize=(8,4), constrained_layout=True)
         fig.suptitle(f'Emitter positions / discrete modes shown in red ($N_k={self.Nk}$)')
         axes[0].set_xlabel(r'$k$ \rm{(}$\mu$\rm{m}${}^{-1}$\rm{)}')
-        axes[0].set_title(r'$\hbar\omega$ \rm{(eV)}')
+        axes[0].set_title(r'$\hbar\omega_k$ \rm{(eV)}')
         #axes[1].set_xlabel(self.labels['rn'])
         axes[1].set_title(r'$\Gamma_\uparrow(r_n)\ (\sigma={}$\rm{{nm}}$)$'.format(
             self.params['pump_width']))
         all_Ks = np.linspace(self.Ks[0],self.Ks[-1], 250)
-        all_ks = (2*np.pi/self.params['L']) * all_Ks * 1e3
+        #all_ks = (2*np.pi/self.params['L']) * all_Ks * 1e3
         all_y = self.omega(all_Ks)
-        chosen_y = self.omega(self.Ks)
         all_ns = np.linspace(0, self.Nk, 250)
         all_rs = self.params['delta_r'] * all_ns * 1e-03
         all_pumps = self.pump(all_ns)
         select_pumps = self.pump(self.ns)
-        axes[0].plot(all_ks, all_y)
+        axes[0].plot(all_Ks, all_y)
+        Q0=self.Q0
+        Nk=self.Nk
+        #ticks = [-Q0, -round(Q0/2), 0, round(Q0/2), Q0]
+        ticks = [-(Nk/2), -(Nk/4), 0, (Nk/4), (Nk/2)]
+        tick_labels = [r'$-\pi/\Delta r$', r'$-\pi/(2\Delta r)$',r'$0$', r'$\pi/2(\Delta r) $',r'$\pi/\Delta r $']
+        axes[0].set_xlim([-(Nk/2), (Nk/2)])
+        axes[0].set_xticks(ticks)
+        axes[0].set_xticklabels(tick_labels)
         #axes[0].scatter(self.ks * 1e3, chosen_y, c='r', s=8, zorder=2)
-        axes[0].axhline(self.params['omega_0'], c='r')
+        axes[0].axhline(self.params['omega_0']-self.params['omega_p'], c='r', label=r'$\omega_0-\omega_p$')
+        if self.params['model'] == 'two-node':
+            KL, KR = self.Ks[self.QL], self.Ks[self.QR]
+            ws = self.omega(np.array([KL,KR]))
+            axes[0].scatter([KL,KR], ws, c='m', s=80, marker='x', label=r'\rm{two-node}',zorder=2)
+        axes[0].legend()
         axes[1].plot(all_ns, all_pumps)
         axes[1].scatter(self.ns, select_pumps, c='r', s=8, zorder=2)
         fp = os.path.join(self.DEFAULT_DIRS['figures'], 'dispersion_pump.png')
@@ -1101,9 +1171,18 @@ class HTC:
         numer = 4 * g**2 * NE * GT * Gu
         denom = GT**2 * kap * (GT + kap) + 4 * DG * g**2 * (kap - NE * (GT + kap))
         return numer/denom
-        
 
-def plot_input_output(parameters, pump_strengths, tend=100):
+    def cauchy_mask(self, ada):
+        delta = 1e-8
+        ada = fftshift(ada)
+        diags = np.diag(ada)
+        Nk = len(diags)
+        ada_p = np.array([x * np.ones(Nk) for x in diags])
+        ada_k = ada_p.T
+        mask = np.abs(ada)**2 > ada_p * ada_k + delta # delta for numerical approx.
+        return mask        
+
+def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True):
     # 2024-04-16
     params = parameters
     num_pumps = len(pump_strengths)
@@ -1116,6 +1195,7 @@ def plot_input_output(parameters, pump_strengths, tend=100):
     evpops_final = np.zeros((num_pumps, params['Nnu'], Nk), dtype=float) # vibrational pops conditioned on electronic excited state
     gvpops_final = np.zeros((num_pumps, params['Nnu'], Nk), dtype=float) # electronic ground state
     adaga_final = np.zeros((num_pumps, Nk, Nk), dtype=complex) 
+    adaga_final_mask = np.zeros((num_pumps, Nk, Nk), dtype=bool) 
     n_nm_final = np.zeros((num_pumps, Nk, Nk), dtype=complex) 
     span_final = np.zeros((num_pumps, Nk), dtype=complex) 
     JLs_final = np.zeros((num_pumps, Nk), dtype=complex)
@@ -1136,6 +1216,10 @@ def plot_input_output(parameters, pump_strengths, tend=100):
         JLs_final[i, :], JRs_final[i, :] = htc.J(n_nm_final[i,:,:])
         Js_final[i, :] = JRs_final[i] - JLs_final[i]
         adaga_final[i, :, :] = ada #fftshift(ada)
+        if cauchy_mask:
+            adaga_final_mask[i,:,:] = htc.cauchy_mask(ada)
+        else:
+            adaga_final_mask[i,:,:] = np.zeros(ada.shape, dtype=bool) # no masked values
         an_l = fft(al, axis=1) # index i, then k, then n ! (see EoMs). No normalisation (choice)
         #print(contract('imn,i->mn', htc.gp.basis[htc.gp.indices[1]], htc.ocoeffs['sp_l']))
         an_spn = np.diag(contract('imn,i->mn', an_l, htc.ocoeffs['sp_l']))
@@ -1231,6 +1315,7 @@ def plot_input_output(parameters, pump_strengths, tend=100):
     axes2 = axes2.flatten()
     #cm = colormaps['coolwarm'] 
     cm = colormaps['viridis'] 
+    cm.set_bad('red')
     #extent = [-params['Q0'], params['Q0'], -params['Q0'], params['Q0']]
     extent = [htc.ks[0], htc.ks[-1],htc.ks[0], htc.ks[-1]]
     my_im = lambda axis, vals: axis.imshow(vals, origin='lower', aspect='auto',
@@ -1239,18 +1324,21 @@ def plot_input_output(parameters, pump_strengths, tend=100):
     tick_labels = [r'$-\pi/\Delta r$', r'$-\pi/2\Delta r$',r'$0$', r'$\pi/2\Delta r $',r'$\pi/\Delta r $']
     for i_a, i in enumerate(select_indices):
         plabel = r'${}$'.format(round(ratios[i_a],5))
-        im = my_im(axes2[i_a], fftshift(adaga_final[i,:,:].real))
+        adaga_one = np.ma.masked_array(np.copy(fftshift(adaga_final[i,:,:])),
+                                         mask=fftshift(adaga_final_mask[i,:,:]))
+        #im = my_im(axes2[i_a], fftshift(adaga_final[i,:,:].real))
+        im = my_im(axes2[i_a], adaga_one.real)
         cbar = fig2.colorbar(im, ax=axes2[i_a], aspect=20)
         axes2[i_a].set_xlabel(r'$k^\prime$', rotation=0)
-        axes2[i_a].set_ylabel(r'$k$')
+        axes2[i_a].set_ylabel(r'$k$', rotation=0, labelpad=-20)
         axes2[i_a].set_xticks(ticks)
         axes2[i_a].set_xticklabels(tick_labels)
         axes2[i_a].set_yticks(ticks)
         axes2[i_a].set_yticklabels(tick_labels)
         axes2[i_a].set_title(pump_title + r'$=$'+plabel)
-    fig2.suptitle(r'$\langle a^{\dagger}_{k^\prime} a_k \rangle$')
-    fp = os.path.join(htc.DEFAULT_DIRS['figures'], 'adaggera.png')
-    fig2.savefig(fp, bbox_inches='tight', dpi=600)
+    fig2.suptitle(r'Re$\langle a^{\dagger}_{k^\prime} a_k \rangle$')
+    fp2 = os.path.join(htc.DEFAULT_DIRS['figures'], 'adaggera.png')
+    fig2.savefig(fp2, bbox_inches='tight', dpi=600)
     plt.close(fig2)
     fig3, axes3 = plt.subplots(num_rows, 2, figsize=(8,4*num_rows), constrained_layout=True)
     axes3 = axes3.flatten()
@@ -1264,9 +1352,10 @@ def plot_input_output(parameters, pump_strengths, tend=100):
         axes3[i_a].set_ylabel(r'$n$', rotation=0)
         axes3[i_a].set_title(pump_title + r'$=$'+plabel)
     fig3.suptitle(r'$\lvert n_{nm} \rvert$')
-    fp = os.path.join(htc.DEFAULT_DIRS['figures'], 'n_nm.png')
-    fig3.savefig(fp, bbox_inches='tight', dpi=600)
+    fp3 = os.path.join(htc.DEFAULT_DIRS['figures'], 'n_nm.png')
+    fig3.savefig(fp3, bbox_inches='tight', dpi=600)
     plt.close(fig3)
+    logger.info(f'<a^dagger_k a_k> plot saved to {fp2}, n_nm plot to {fp3}')
     fig4, axes4 = plt.subplots(num_rows, 2, figsize=(8,4*num_rows), constrained_layout=True)
     axes4 = axes4.flatten()
     cm = colormaps['viridis'] 
@@ -1282,12 +1371,13 @@ def plot_input_output(parameters, pump_strengths, tend=100):
         axes4[i_a].set_ylabel(r'$n$', rotation=0)
         axes4[i_a].set_title(pump_title + r'$=$'+plabel)
     fig4.suptitle(r'$\lvert\nabla \cdot n_{nm}\rvert$')
-    fp = os.path.join(htc.DEFAULT_DIRS['figures'], 'n_nm_grad.png')
-    fig4.savefig(fp, bbox_inches='tight', dpi=600)
+    fp4 = os.path.join(htc.DEFAULT_DIRS['figures'], 'n_nm_grad.png')
+    fig4.savefig(fp4, bbox_inches='tight', dpi=600)
     plt.close(fig4)
     fp = os.path.join(htc.DEFAULT_DIRS['figures'], 'input_output.png')
     fig.savefig(fp, bbox_inches='tight', dpi=450)
     plt.close(fig)
+    logger.info(f'n_nm gradient plot saved to {fp4}, input_output plot to {fp}')
 
 def plot_dynamics_and_final_state(parameters):
     # 2024-04-05 - Dynamics and steady state
@@ -1333,13 +1423,12 @@ if __name__ == '__main__':
             'model': 'plasmonic',
             }
     tb_parameters = {
-            'Q0': 25, # Chain of Nk = 2*Q0+1 = 51 sites
+            'Q0': 30, # Chain of Nk = 2*Q0+1 = 51 sites
             'NE': 100, # Number of emitters per gap
             'w': 1, # Gap width, nm (Emitter spacing Delta_r = 2a+w = 81nm) [not used in dynamics calculation]
             'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm) [not used in dynamics]
-            'omega_p': 1.88, # Plasmon resonance, eV [not used in tight-binding model]
-            #'omega_0': 1.86, # Dye resonance, eV 
-            'omega_0': 0.0, # Dye resonance, eV [0 initially for tight-binding model]
+            'omega_p': 0.0, # Plasmon resonance, eV [not used in tight-binding model]
+            'omega_0': 0.0, # Dye resonance, eV [use to control detuning in tight binding model]
             't': 0.2, # hopping parameter, eV [not used in plasmonic model]
             'g': 0.01, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
             'kappa': 0.1, # photon loss
@@ -1355,6 +1444,7 @@ if __name__ == '__main__':
             'gam_nu': 1e-04, # vibrational damping rate [N/A when Nnu=1]
             'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'tight-binding', # dispersion to use 
+            #'model': 'two-node', # tight-binding dispersion... but only counting two modes
             }
     #pump_strengths = np.logspace(-3, 0.6, num=20) # set pump strength magnitudes for input-output curve
     pump_strengths = np.logspace(-2, 2, num=5) # set pump strength magnitudes for input-output curve
