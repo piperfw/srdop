@@ -1399,6 +1399,58 @@ def plot_dynamics_and_final_state(parameters):
     #results['dynamics']['g1'] # Normalised first-order coherence g^(1)(t,r_n,L/2)
     #results['dynamics']['vpop'] # Populations of vibrational level at each time (1st index), for each position (2nd index), for each level 0..Nnu-1 (3rd index)
 
+def two_mode_comparison(params):
+    from copy import copy
+    params1 = copy(params)
+    params2 = copy(params)
+    params1['model'] = 'tight-binding'
+    params2['model'] = 'two-node'
+    htc1 = HTC(params1)
+    results1 = htc1.evolve(tend=100.0)
+    t1 = results1['dynamics']['t']
+    nP1 = results1['dynamics']['nP']
+    nM1 = results1['dynamics']['nM']
+    nK1 = results1['dynamics']['nK']
+    htc2 = HTC(params2)
+    results2 = htc2.evolve(tend=100.0)
+    t2 = results2['dynamics']['t']
+    nP2 = results2['dynamics']['nP']
+    nM2 = results2['dynamics']['nM']
+    nK2 = results2['dynamics']['nK']
+    QL, QR = htc2.QL, htc2.QR
+    fig, axes = plt.subplots(2, 2, figsize=(8,8), constrained_layout=True)
+    p1 = axes[0,0].plot(t1, nK1[:,QL].real, label=r'$k_L$')
+    p2 = axes[0,0].plot(t1, nK1[:,QR].real, label=r'$k_R$')
+    axes[0,0].set_xlabel(r'$t$ \rm{(fs)}')
+    axes[0,0].plot(t2, nK2[:,QL].real, ls='--', color=p1[-1].get_color(), label=r'$k_L$ \rm{(two-mode)}')
+    axes[0,0].plot(t2, nK2[:,QR].real, ls='--', color=p2[-1].get_color(), label=r'$k_R$ \rm{(two-mode)}')
+    axes[0,0].legend()
+    axes[0,0].set_title(r'$\langle a_k^\dagger a_k^{\phantom{\dagger}} \rangle(t)$')
+    axes[1,0].set_title(r'$\langle a_k^\dagger a_k^{\phantom{\dagger}} \rangle(t_f)$')
+    axes[1,0].plot(htc1.Ks, nK1[-1,:].real)
+    p = axes[1,1].plot(htc1.rs, nM1[-1,:], label=r'\rm{full}')
+    axes[1,1].plot(htc2.rs, nM2[-1,:], ls='--', color=p[-1].get_color(), label=r'\rm{two-mode}')
+    axes[1,1].set_title(htc1.labels['EnM']+r'$(r_n, t_f)$')
+    #axes[0,1].set_axis_off()
+    axes[1,1].set_xlabel(htc1.labels['rn'])
+    axes[1,1].legend()
+    axes[1,0].set_xlabel(r'$K$')
+    para_strs = \
+            [r'$N_E={}$'.format(htc1.NE),
+             r'$\kappa={}$'.format(params['kappa']),
+             r'@@@ $t={}$ @@@'.format(params['t']),
+             r'$g={}$'.format(params['g']),
+             r'$\Gamma_z={}$'.format(params['dephase']),
+             r'$\Gamma_\uparrow(L/2)={}$'.format(params['pump_strength']),
+             r'$\Gamma_\downarrow={}$'.format(params['decay']),
+             #r'$\omega_0={}$'.format(params['omega_0']),
+             ]
+    axes[0,1].get_xaxis().set_visible(False)
+    axes[0,1].get_yaxis().set_visible(False)
+    axes[0,1].text(0.5,0.8, '\n'.join(para_strs), ha='center', va='top', transform=axes[0,1].transAxes,
+                   size='large')
+    fig.savefig('figures/two-mode_comparison.png', bbox_inches='tight', dpi=400)
+
 if __name__ == '__main__':
     logging.basicConfig(
         format='%(filename)s L%(lineno)s %(asctime)s %(levelname)s: %(message)s',
@@ -1433,11 +1485,11 @@ if __name__ == '__main__':
             'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm) [not used in dynamics]
             'omega_p': 0.0, # Plasmon resonance, eV [not used in tight-binding model]
             'omega_0': 0.0, # Dye resonance, eV [use to control detuning in tight binding model]
-            't': 0.2, # hopping parameter, eV [not used in plasmonic model]
+            't': 5.0, # hopping parameter, eV [not used in plasmonic model]
             'g': 0.01, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
             'kappa': 0.1, # photon loss
             'dephase': 0.0, # Emitter pure dephasing
-            'pump_strength': 0.001, #  Magnitude of pump strength (changed in plot_input_output below)
+            'pump_strength': 0.1, #  Magnitude of pump strength (changed in plot_input_output below)
             #'pump_width': 324, # Pump spot width, nm (4 sites = 4 * Delta r = 4 * 81 = 324nm)
             'pump_width': 229, # Pump spot width, nm, to match JB Aexp{-((n-25)/4)^2} (see def gaussian above)
             'decay': 0.05, # Emitter non-resonant decay
@@ -1451,7 +1503,8 @@ if __name__ == '__main__':
             #'model': 'two-node', # tight-binding dispersion... but only counting two modes
             }
     #pump_strengths = np.logspace(-3, 0.6, num=20) # set pump strength magnitudes for input-output curve
-    pump_strengths = np.logspace(-2, 2, num=5) # set pump strength magnitudes for input-output curve
-    plot_input_output(tb_parameters, pump_strengths, tend=100) # all other parameters fixed
+    #pump_strengths = np.logspace(-2, 2, num=5) # set pump strength magnitudes for input-output curve
+    #plot_input_output(tb_parameters, pump_strengths, tend=100) # all other parameters fixed
     #plot_dynamics_and_final_state(tb_parameters) 
+    two_mode_comparison(tb_parameters)
 
