@@ -1480,13 +1480,13 @@ if __name__ == '__main__':
             }
     tb_parameters = {
             'Q0': 30, # Chain of Nk = 2*Q0+1 = 51 sites
-            'NE': 100, # Number of emitters per gap
+            'NE': 4, # Number of emitters per gap
             'w': 1, # Gap width, nm (Emitter spacing Delta_r = 2a+w = 81nm) [not used in dynamics calculation]
             'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm) [not used in dynamics]
             'omega_p': 0.0, # Plasmon resonance, eV [not used in tight-binding model]
             'omega_0': 0.0, # Dye resonance, eV [use to control detuning in tight binding model]
-            't': 5.0, # hopping parameter, eV [not used in plasmonic model]
-            'g': 0.01, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
+            't': 0.1, # hopping parameter, eV [not used in plasmonic model]
+            'g': 0.1, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
             'kappa': 0.1, # photon loss
             'dephase': 0.0, # Emitter pure dephasing
             'pump_strength': 0.1, #  Magnitude of pump strength (changed in plot_input_output below)
@@ -1503,7 +1503,7 @@ if __name__ == '__main__':
             #'model': 'two-node', # tight-binding dispersion... but only counting two modes
             }
     #pump_strengths = np.logspace(-3, 0.6, num=20) # set pump strength magnitudes for input-output curve
-    #pump_strengths = np.logspace(-2, 2, num=5) # set pump strength magnitudes for input-output curve
+    #pump_strengths = np.logspace(-2, 2, num=1) # set pump strength magnitudes for input-output curve
     #plot_input_output(tb_parameters, pump_strengths, tend=100) # all other parameters fixed
     #plot_dynamics_and_final_state(tb_parameters) 
     two_mode_comparison(tb_parameters)
