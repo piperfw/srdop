@@ -353,12 +353,14 @@ class HTC:
             mask_2d[QL] = mask_1d
             mask_2d[QR] = mask_1d
             self.mode_mask = {}
-            self.mode_mask['ada'] = fftshift(mask_2d)
+            self.mode_mask['ada'] = ifftshift(mask_2d)
             self.mode_mask['ada_args'] = np.where(self.mode_mask['ada'])
+            #print(self.mode_mask['ada'].astype(int))
+            #print(self.mode_mask['ada_args'])
             mask_kn = (np.zeros((Nk,Nk), dtype=bool) + mask_1d).T # only if Nnu=1
             mask_ikn = np.zeros(self.state_dic['al']['shape'], dtype=bool)
             mask_ikn[:] = mask_kn # at each i mask everything except rows K=QL, K=QR
-            self.mode_mask['al'] = fftshift(mask_ikn, axes=1)
+            self.mode_mask['al'] = ifftshift(mask_ikn, axes=1)
             self.mode_mask['al_args'] = np.where(self.mode_mask['al'])
             self.QL, self.QR = QL, QR
         else:
@@ -621,13 +623,13 @@ class HTC:
         if self.params['model'] == 'two-node':
             aTMk = np.zeros((2,2), dtype=complex)
             # Better: precalculate the four-indices and do in one assignment 
-            ada_shift = ifftshift(ada)
+            ada_shift = fftshift(ada)
             aTMk[0,0] = ada_shift[self.QL, self.QL]
             aTMk[0,1] = ada_shift[self.QL, self.QR]
             aTMk[1,0] = ada_shift[self.QR, self.QL]
             aTMk[1,1] = ada_shift[self.QR, self.QR]
             self.dynamics['aTMk'][t_index] = aTMk
-        nk = ifftshift(np.diag(ada))
+        nk = fftshift(np.diag(ada))
         self.check_real(t_index, nk, 'Photon number (k-space)')
         alpha = ifft(ada, axis=0) # including 1/N_k normalisation!
         dft2 = fft(alpha, axis=-1) # real space so no fftshift... (start with position 0...)
@@ -943,8 +945,7 @@ class HTC:
         my_im = lambda axis, vals: axis.imshow(vals, origin='lower', aspect='auto',
                                            interpolation='none', extent=extent, cmap=cm)
         if self.params['model'] == 'two-node':
-            #print(self.dynamics['nK'][-1])
-            # N.B. nK was already ifftshifted to -Q0,...0,...Q0 ordering shifted
+            # N.B. nK was already fftshifted to -Q0,...0,...Q0 ordering shifted
             axes[0,0].plot(t_fs, self.dynamics['nK'][:,self.QL], label=r'$1=-Q_{\text{half}}$') # NON-ZERO
             axes[0,0].plot(t_fs, self.dynamics['nK'][:,self.QR], label=r'$2=+Q_{\text{half}}$') # NON-ZERO
             axes[0,0].legend(title=r'$k$')
@@ -1435,6 +1436,12 @@ def two_mode_comparison(params):
     axes[1,1].set_xlabel(htc1.labels['rn'])
     axes[1,1].legend()
     axes[1,0].set_xlabel(r'$K$')
+    axes[1,0].axvline(htc1.Ks[QL], color='m', ls='--')
+    axes[1,0].axvline(htc1.Ks[QR], color='m', ls='--')
+    axes[1,0].annotate(r'${:.2f}$'.format(nK1[-1,QL]), xy=(htc1.Ks[QL],nK1[-1,QL]), xytext=(5,0),
+                       textcoords='offset points')
+    axes[1,0].annotate(r'${:.2f}$'.format(nK1[-1,QR]), xy=(htc1.Ks[QR],nK1[-1,QR]), xytext=(5,0),
+                       textcoords='offset points')
     para_strs = \
             [r'$N_E={}$'.format(htc1.NE),
              r'$\kappa={}$'.format(params['kappa']),
@@ -1480,13 +1487,13 @@ if __name__ == '__main__':
             }
     tb_parameters = {
             'Q0': 30, # Chain of Nk = 2*Q0+1 = 51 sites
-            'NE': 4, # Number of emitters per gap
+            'NE': 100, # Number of emitters per gap
             'w': 1, # Gap width, nm (Emitter spacing Delta_r = 2a+w = 81nm) [not used in dynamics calculation]
             'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm) [not used in dynamics]
             'omega_p': 0.0, # Plasmon resonance, eV [not used in tight-binding model]
             'omega_0': 0.0, # Dye resonance, eV [use to control detuning in tight binding model]
-            't': 0.1, # hopping parameter, eV [not used in plasmonic model]
-            'g': 0.1, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
+            't': 5.0, # hopping parameter, eV [not used in plasmonic model]
+            'g': 0.01, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
             'kappa': 0.1, # photon loss
             'dephase': 0.0, # Emitter pure dephasing
             'pump_strength': 0.1, #  Magnitude of pump strength (changed in plot_input_output below)
@@ -1502,9 +1509,34 @@ if __name__ == '__main__':
             'model': 'tight-binding', # dispersion to use 
             #'model': 'two-node', # tight-binding dispersion... but only counting two modes
             }
+    tb_parameters = {
+            'Q0': 30, # Chain of Nk = 2*Q0+1 = 51 sites
+            'NE': 100, # Number of emitters per gap
+            'w': 1, # Gap width, nm (Emitter spacing Delta_r = 2a+w = 81nm) [not used in dynamics calculation]
+            'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm) [not used in dynamics]
+            'omega_p': 0.0, # Plasmon resonance, eV [not used in tight-binding model]
+            'omega_0': 0.0, # Dye resonance, eV [use to control detuning in tight binding model]
+            't': 5.0, # hopping parameter, eV [not used in plasmonic model]
+            'g': 0.01, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
+            'kappa': 0.1, # photon loss
+            'dephase': 0.0, # Emitter pure dephasing
+            'pump_strength': 0.1, #  Magnitude of pump strength (changed in plot_input_output below)
+            #'pump_width': 324, # Pump spot width, nm (4 sites = 4 * Delta r = 4 * 81 = 324nm)
+            'pump_width': 229, # Pump spot width, nm, to match JB Aexp{-((n-25)/4)^2} (see def gaussian above)
+            'decay': 0.05, # Emitter non-resonant decay
+            'Nnu': 1, # Number of vibrational levels for each emitter
+            'S': 0.1, # Huang-Rhys parameter [Not relevant if Nnu=1]
+            'omega_nu': 0.19, # Vibrational mode resonance, eV [N/A when Nnu=1]
+            'T':0.026, # k_B T in eV for vibrational environment (.026=302K) [N/A when Nnu=1]
+            'gam_nu': 1e-04, # vibrational damping rate [N/A when Nnu=1]
+            'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
+            'model': 'tight-binding', # dispersion to use 
+            #'model': 'two-node', # tight-binding dispersion... but only counting two modes
+            }
+    # parameters for two-node: Q0=30, NE=100, g=0.01, t=0.1, 1.0, 5.0
     #pump_strengths = np.logspace(-3, 0.6, num=20) # set pump strength magnitudes for input-output curve
-    #pump_strengths = np.logspace(-2, 2, num=1) # set pump strength magnitudes for input-output curve
-    #plot_input_output(tb_parameters, pump_strengths, tend=100) # all other parameters fixed
-    #plot_dynamics_and_final_state(tb_parameters) 
-    two_mode_comparison(tb_parameters)
+    pump_strengths = np.logspace(-2, 2, num=2) # set pump strength magnitudes for input-output curve
+    plot_input_output(tb_parameters.copy(), pump_strengths, tend=100) # all other parameters fixed
+    #plot_dynamics_and_final_state(tb_parameters.copy()) 
+    #two_mode_comparison(tb_parameters)
 
