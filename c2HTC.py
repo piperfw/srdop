@@ -61,6 +61,7 @@ class HTC:
             'omega_nu': 0.19, # Vibrational mode resonance, eV
             'T':0.026, # k_B T in eV (.026=302K)
             'gam_nu': 1e-03, # vibrational damping rate
+            'gam_as': 0.0, # Antistokes decay
             'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'plasmonic', # or 'tight-binding', 'two-node' - sets the dispersion ('two-node' is tight-binding but only coupling points at k= \pm \pi/(2 Delta r) [N.B. assumes all but those entires are zero in the initial state]
             }
@@ -154,6 +155,7 @@ class HTC:
         rates['gam_delta'] = rates['gam_up'] - rates['gam_down']
         params['gam_up'] = rates['gam_up']
         params['gam_down'] = rates['gam_down']
+        rates['gam_as'] = params['gam_as']
         return rates
 
     def get_modes(self):
@@ -231,15 +233,18 @@ class HTC:
         C3_base = gp.get_coefficients(np.kron(si, b), sgn=0)
         Dp_base = gp.get_coefficients(np.kron(sp, bi), sgn=1)
         Dm_base = gp.get_coefficients(np.kron(sm, bi), sgn=-1)
+        DAS_base = gp.get_coefficients(np.kron(sm, bd), sgn=-1)
         consts['gam0_n'] = np.array([np.outer(base, np.sqrt(Xs)) for Xs, base in
                                      zip([self.dephase(self.ns), rates['gam_up'] * np.ones(Nk),
                                           rates['gam_down'] * np.ones(Nk)],[C1_base, C2_base, C3_base])])
         consts['gamp_n'] = np.outer(Dp_base, np.sqrt(self.pump(self.ns)))
         consts['gamm_n'] = np.outer(Dm_base, np.sqrt(self.decay(self.ns)))
+        consts['gamas_n'] = np.outer(DAS_base, np.sqrt(rates['gam_as'] * np.ones(Nk)))
         #
         consts['gam00_n'] = contract('arn,apn->rpn', consts['gam0_n'].conj(), consts['gam0_n'])
         consts['gampp_n'] = contract('in,jn->ijn', consts['gamp_n'].conj(), consts['gamp_n'])
         consts['gammm_n'] = contract('in,jn->ijn', consts['gamm_n'].conj(), consts['gamm_n'])
+        consts['gamas_n'] = contract('in,jn->ijn', consts['gamas_n'].conj(), consts['gamas_n'])
         f000 = gp.f_tensor((0,0,0))
         f011 = gp.f_tensor((0,1,1))
         z000 = gp.z_tensor((0,0,0))
@@ -250,21 +255,25 @@ class HTC:
         consts['xi_n'] = 2 * contract('ipj,pn->ijn', f000, consts['A0_n']) \
                 + 2 * contract('irq,rpn,qpj->ijn', f000, consts['gam00_n'], z000).imag \
                 + 2 * contract('ijn,aip,bpj->abn', consts['gampp_n'], f011.conj(), zm011).imag \
-                + 2 * contract('ijn,aip,bpj->abn', consts['gammm_n'], f011, z011).imag
+                + 2 * contract('ijn,aip,bpj->abn', consts['gammm_n'], f011, z011).imag \
+                + 2 * contract('ijn,aip,bpj->abn', consts['gamas_n'], f011, z011).imag
         consts['phi0_n'] = (2/params['Nnu']) * contract('ajq,jqn->an', f000, consts['gam00_n'].imag) \
                 + (2/params['Nnu']) * contract('ijn,aij->an', consts['gampp_n'], f011.conj()).imag \
-                + (2/params['Nnu']) * contract('ijn,aij->an', consts['gammm_n'], f011).imag
+                + (2/params['Nnu']) * contract('ijn,aij->an', consts['gammm_n'], f011).imag \
+                + (2/params['Nnu']) * contract('ijn,aij->an', consts['gamas_n'], f011).imag 
                   # Note gamm00 index order reversed below (conjugate)
         consts['xip_n'] = - 2 * contract('aij,an->ijn', f011, consts['A0_n']) \
                 + 1j * contract('aip,abn,bpj->ijn', f011, consts['gam00_n'], zm011.conj()) \
                 - 1j * contract('aip,ban,bpj->ijn', f011, consts['gam00_n'], z011) \
                 + 1j * contract('aip,qpn,aqj->ijn', f011, consts['gammm_n'], zm011.conj()) \
+                + 1j * contract('aip,qpn,aqj->ijn', f011, consts['gamas_n'], zm011.conj()) \
                 - 1j * contract('aip,pqn,aqj->ijn', f011, consts['gampp_n'], z011)
         consts['xim_n'] = - 2 * contract('aij,an->ijn', f011.conj(), consts['A0_n']) \
                 + 1j * contract('aip,abn,bpj->ijn', f011.conj(), consts['gam00_n'], z011.conj()) \
                 - 1j * contract('aip,ban,bpj->ijn', f011.conj(), consts['gam00_n'], zm011) \
                 + 1j * contract('aip,qpn,aqj->ijn', f011.conj(), consts['gampp_n'], z011.conj()) \
-                - 1j * contract('aip,pqn,aqj->ijn', f011.conj(), consts['gammm_n'], zm011)
+                - 1j * contract('aip,pqn,aqj->ijn', f011.conj(), consts['gammm_n'], zm011) \
+                - 1j * contract('aip,pqn,aqj->ijn', f011.conj(), consts['gamas_n'], zm011)
         shifted_Ks = np.fft.ifftshift(self.Ks) # ALL COMPUTATIONS DONE WITH numpy order of modes
         #rolled_Ks = np.roll(self.Ks, -self.Q0) # equivalent to shifted_Ks
         consts['kappa'] = self.kappa(shifted_Ks)
@@ -620,6 +629,10 @@ class HTC:
         self.calculate_vibronic(t_index, l) # vibrational populations for emitters in each gap
 
     def calculate_photonic(self, t_index, ada):
+        nk = fftshift(np.diag(ada))
+        self.check_real(t_index, nk, 'Photon number (k-space)')
+        alpha = ifft(ada, axis=0) # including 1/N_k normalisation!
+        dft2 = fft(alpha, axis=-1) # real space so no fftshift... (start with position 0...)
         if self.params['model'] == 'two-node':
             aTMk = np.zeros((2,2), dtype=complex)
             # Better: precalculate the four-indices and do in one assignment 
@@ -629,14 +642,8 @@ class HTC:
             aTMk[1,0] = ada_shift[self.QR, self.QL]
             aTMk[1,1] = ada_shift[self.QR, self.QR]
             self.dynamics['aTMk'][t_index] = aTMk
-        nk = fftshift(np.diag(ada))
-        self.check_real(t_index, nk, 'Photon number (k-space)')
-        alpha = ifft(ada, axis=0) # including 1/N_k normalisation!
-        dft2 = fft(alpha, axis=-1) # real space so no fftshift... (start with position 0...)
         nph = np.diag(dft2) # n(r_n) when n=m
         self.check_real(t_index, nph, 'Photon density')
-        # Previous code - calculated g^(1)(r_n, R)
-        #dft2 = fftshift(dft2)
         mid_n = self.Q0
         g1 = np.zeros(self.Nk, dtype=complex)
         for n in self.ns:
@@ -1400,7 +1407,7 @@ def plot_dynamics_and_final_state(parameters):
     #results['dynamics']['g1'] # Normalised first-order coherence g^(1)(t,r_n,L/2)
     #results['dynamics']['vpop'] # Populations of vibrational level at each time (1st index), for each position (2nd index), for each level 0..Nnu-1 (3rd index)
 
-def two_mode_comparison(params):
+def two_mode_comparison(params, plot_ph=False):
     from copy import copy
     params1 = copy(params)
     params2 = copy(params)
@@ -1418,7 +1425,14 @@ def two_mode_comparison(params):
     nP2 = results2['dynamics']['nP']
     nM2 = results2['dynamics']['nM']
     nK2 = results2['dynamics']['nK']
+    #print(fft(ifft(results2['dynamics']['aTMk'][-1,:])))
+    #print(np.abs(results2['dynamics']['aTMk'][-1, :]))
     QL, QR = htc2.QL, htc2.QR
+    #adaf = results1['final_state'][:htc1.Nk**2].reshape((htc1.Nk, htc1.Nk))
+    #print(abs(adaf[QL,QL]))
+    #print(abs(adaf[QR,QL]))
+    #print(abs(adaf[QL,QR]))
+    #print(abs(adaf[QR,QR]))
     fig, axes = plt.subplots(2, 2, figsize=(8,8), constrained_layout=True)
     p1 = axes[0,0].plot(t1, nK1[:,QL].real, label=r'$k_L$')
     p2 = axes[0,0].plot(t1, nK1[:,QR].real, label=r'$k_R$')
@@ -1429,9 +1443,14 @@ def two_mode_comparison(params):
     axes[0,0].set_title(r'$\langle a_k^\dagger a_k^{\phantom{\dagger}} \rangle(t)$')
     axes[1,0].set_title(r'$\langle a_k^\dagger a_k^{\phantom{\dagger}} \rangle(t_f)$')
     axes[1,0].plot(htc1.Ks, nK1[-1,:].real)
-    p = axes[1,1].plot(htc1.rs, nM1[-1,:], label=r'\rm{full}')
-    axes[1,1].plot(htc2.rs, nM2[-1,:], ls='--', color=p[-1].get_color(), label=r'\rm{two-mode}')
-    axes[1,1].set_title(htc1.labels['EnM']+r'$(r_n, t_f)$')
+    if plot_ph:
+        axes[1,1].set_title(htc1.labels['Eph']+r'$(r_n, t_f)$')
+        p = axes[1,1].plot(htc1.rs, nP1[-1,:], label=r'\rm{full}')
+        axes[1,1].plot(htc2.rs, nP2[-1,:], ls='--', color=p[-1].get_color(), label=r'\rm{two-mode}')
+    else:
+        axes[1,1].set_title(htc1.labels['EnM']+r'$(r_n, t_f)$')
+        p = axes[1,1].plot(htc1.rs, nM1[-1,:], label=r'\rm{full}')
+        axes[1,1].plot(htc2.rs, nM2[-1,:], ls='--', color=p[-1].get_color(), label=r'\rm{two-mode}')
     #axes[0,1].set_axis_off()
     axes[1,1].set_xlabel(htc1.labels['rn'])
     axes[1,1].legend()
@@ -1482,18 +1501,19 @@ if __name__ == '__main__':
             'omega_nu': 0.19, # Vibrational mode resonance, eV
             'T':0.026, # k_B T in eV (.026=302K)
             'gam_nu': 1e-03, # vibrational damping rate
+            'gam_as': 0.0, # Antistokes decay
             'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'plasmonic',
             }
     tb_parameters = {
             'Q0': 30, # Chain of Nk = 2*Q0+1 = 51 sites
-            'NE': 100, # Number of emitters per gap
+            'NE': 4, # Number of emitters per gap
             'w': 1, # Gap width, nm (Emitter spacing Delta_r = 2a+w = 81nm) [not used in dynamics calculation]
             'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm) [not used in dynamics]
             'omega_p': 0.0, # Plasmon resonance, eV [not used in tight-binding model]
             'omega_0': 0.0, # Dye resonance, eV [use to control detuning in tight binding model]
-            't': 5.0, # hopping parameter, eV [not used in plasmonic model]
-            'g': 0.01, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
+            't': 0.1, # hopping parameter, eV [not used in plasmonic model]
+            'g': 0.1, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
             'kappa': 0.1, # photon loss
             'dephase': 0.0, # Emitter pure dephasing
             'pump_strength': 0.1, #  Magnitude of pump strength (changed in plot_input_output below)
@@ -1505,38 +1525,15 @@ if __name__ == '__main__':
             'omega_nu': 0.19, # Vibrational mode resonance, eV [N/A when Nnu=1]
             'T':0.026, # k_B T in eV for vibrational environment (.026=302K) [N/A when Nnu=1]
             'gam_nu': 1e-04, # vibrational damping rate [N/A when Nnu=1]
-            'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
-            'model': 'tight-binding', # dispersion to use 
-            #'model': 'two-node', # tight-binding dispersion... but only counting two modes
-            }
-    tb_parameters = {
-            'Q0': 30, # Chain of Nk = 2*Q0+1 = 51 sites
-            'NE': 100, # Number of emitters per gap
-            'w': 1, # Gap width, nm (Emitter spacing Delta_r = 2a+w = 81nm) [not used in dynamics calculation]
-            'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm) [not used in dynamics]
-            'omega_p': 0.0, # Plasmon resonance, eV [not used in tight-binding model]
-            'omega_0': 0.0, # Dye resonance, eV [use to control detuning in tight binding model]
-            't': 5.0, # hopping parameter, eV [not used in plasmonic model]
-            'g': 0.01, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
-            'kappa': 0.1, # photon loss
-            'dephase': 0.0, # Emitter pure dephasing
-            'pump_strength': 0.1, #  Magnitude of pump strength (changed in plot_input_output below)
-            #'pump_width': 324, # Pump spot width, nm (4 sites = 4 * Delta r = 4 * 81 = 324nm)
-            'pump_width': 229, # Pump spot width, nm, to match JB Aexp{-((n-25)/4)^2} (see def gaussian above)
-            'decay': 0.05, # Emitter non-resonant decay
-            'Nnu': 1, # Number of vibrational levels for each emitter
-            'S': 0.1, # Huang-Rhys parameter [Not relevant if Nnu=1]
-            'omega_nu': 0.19, # Vibrational mode resonance, eV [N/A when Nnu=1]
-            'T':0.026, # k_B T in eV for vibrational environment (.026=302K) [N/A when Nnu=1]
-            'gam_nu': 1e-04, # vibrational damping rate [N/A when Nnu=1]
+            'gam_as': 0.0, # Antistokes decay
             'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'tight-binding', # dispersion to use 
             #'model': 'two-node', # tight-binding dispersion... but only counting two modes
             }
     # parameters for two-node: Q0=30, NE=100, g=0.01, t=0.1, 1.0, 5.0
     #pump_strengths = np.logspace(-3, 0.6, num=20) # set pump strength magnitudes for input-output curve
-    pump_strengths = np.logspace(-2, 2, num=2) # set pump strength magnitudes for input-output curve
+    pump_strengths = np.logspace(-2, -1, num=2) # set pump strength magnitudes for input-output curve
     plot_input_output(tb_parameters.copy(), pump_strengths, tend=100) # all other parameters fixed
     #plot_dynamics_and_final_state(tb_parameters.copy()) 
-    #two_mode_comparison(tb_parameters)
+    #two_mode_comparison(tb_parameters, plot_ph=True)
 
