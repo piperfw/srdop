@@ -12,7 +12,7 @@ from scipy.signal import butter, filtfilt, lfilter, freqz, argrelextrema
 from scipy.optimize import curve_fit
 from scipy import constants
 from scipy.fft import fft, ifft, fftshift, ifftshift # recommended over numpy.fft
-from scipy.integrate import RK45
+from scipy.integrate import RK45, DOP853, solve_ivp
 SOLVER = RK45 # Runge-Kutta 4th order
 from mpmath import polylog
 try:
@@ -62,6 +62,7 @@ class HTC:
             'T':0.026, # k_B T in eV (.026=302K)
             'gam_nu': 1e-03, # vibrational damping rate
             'gam_as': 0.0, # Antistokes decay
+            'as_coherent': False, # True to turn on g(a . sigma^+ . b^- + H.C.) terms
             'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'plasmonic', # or 'tight-binding', 'two-node' - sets the dispersion ('two-node' is tight-binding but only coupling points at k= \pm \pi/(2 Delta r) [N.B. assumes all but those entires are zero in the initial state]
             }
@@ -197,9 +198,28 @@ class HTC:
         #self.state_split_list.pop() 
         self.added_state_length = 1# EXTRA entry appending to state to indicate if has been rescaled or not
         self.state_length = np.sum([self.state_dic[name]['num'] for name in self.state_dic]) + self.added_state_length
+        self.state_dic_mf = {
+                'a': {'shape': Nk},
+                'lp': {'shape': (Nnu**2,Nk)},
+                'l0': {'shape': (2*Nnu**2-1, Nk)},
+                }
+        self.state_split_list_mf, self.state_reshape_list_mf = [], []
+        tot = 0
+        for name in self.state_dic_mf:
+            shape = self.state_dic_mf[name]['shape']
+            self.state_reshape_list_mf.append(shape)
+            num = np.prod(shape)
+            self.state_dic_mf[name]['num'] = num
+            self.state_dic_mf[name]['slice'] = slice(tot, tot+num)
+            self.state_split_list_mf.append(tot+num)
+            tot += num
+        self.state_length_mf = np.sum([self.state_dic_mf[name]['num'] for name in self.state_dic_mf]) 
+        correct_state_length_mf = Nk + (Nnu**2*Nk) + (2*Nnu**2-1)*Nk
         correct_state_length = Nk**2 + (2*Nnu**2-1)*Nk + Nnu**2*Nk**2 + Nnu**4*Nk**2 + self.added_state_length
         assert self.state_length == correct_state_length,\
                 f'state length is {self.state_length} but should be {correct_state_length}'
+        assert self.state_length_mf == correct_state_length_mf,\
+                f'mean-field state length is {self.state_length_mf} but should be {correct_state_length_mf}'
 
     def wrapit(self, meth, msg='', timeit=True):
         if msg:
@@ -224,7 +244,10 @@ class HTC:
                 params['omega_nu']*np.kron(si, bn) +\
                 params['omega_nu']*np.sqrt(params['S'])*np.kron(sz, b+bd) + 0j
         A += 0.25 * (-1j * rates['gam_delta']) * np.kron(si, (bd @ bd - b @ b))
-        B = params['gSqrtNE'] * np.kron(sp, bi)
+        if params['as_coherent']:
+            B = params['gSqrtNE'] * np.kron(sp, bi+bd)
+        else:
+            B = params['gSqrtNE'] * np.kron(sp, bi)
         A0_base, _discard = gp.get_coefficients(A, sgn=0, eye=True) # discard part proportional to identity
         consts['A0_n'] = np.outer(A0_base, np.ones(Nk)) # currently no spatial dependence 
         consts['Bp'] = gp.get_coefficients(B, sgn=1) # N.B. gets i_+ coefficients i.e. traces against lambda_{i_-}
@@ -374,7 +397,16 @@ class HTC:
             self.QL, self.QR = QL, QR
         else:
             self.QL, self.QR, self.mode_mask = None, None, None
-
+        # coefficients for mean-field equations
+        M = {}
+        M['iB_1'] = 1j * consts['Bp']
+        M['11_k'] = -(1j * consts['omega'] + 0.5 * consts['kappa'])
+        M['21_11n'] =  1 * consts['xip_n']
+        M['22_10'] = 2 * contract('j,aij->ia', consts['Bp'], f011)
+        M['31_00n'] = 1 * consts['xi_n']
+        M['32_0n'] = 1 * consts['phi0_n']
+        M['33_01'] = 4 * contract('i,aij->aj', consts['Bp'], f011) # DON'T copy coeffs['23_01'] due to rescaling
+        self.coeffs_mf = M
 
     def omega_single(self, K):
         if K == 0:
@@ -474,9 +506,13 @@ class HTC:
     def create_initial_state(self):
         self.initial_state = self.ground_state()
 
-    def ground_state(self):
-        logger.info(f'Creating initial state with 0 photons/excitons + thermal vibrational populations')
-        pex = 0.0 # initial excited state population of emitters
+    def ground_state(self, mf=False):
+        if mf:
+            logger.info(f'Creating mean-field initial state (ground state) with small symmetry breaking')
+            pex = 2.2208628880360237e-07
+        else:
+            logger.info(f'Creating initial state with 0 photons/excitons + thermal vibrational populations')
+            pex = 0.0 # initial excited state population of emitters
         rho0_ele = np.diag([pex,1.0-pex])
         rho0_vib = self.thermal_rho_vib(self.params['T']) # molecular vibrational density matrix
         rho0 = np.kron(rho0_ele, rho0_vib)
@@ -484,10 +520,78 @@ class HTC:
         l = [2 * coeffs0 for n in range(self.Nk)]
         l = np.real(l).T # i_0 index first, then ensemble index n
         self.all_eye0s = [eye0 for n in range(self.Nk)] # only needed if want to recreate density matrix on a site
+        if mf:
+            coeffs1 = (-0.0004712602672110967) * self.gp.get_coefficients(Pauli.p, sgn=1)
+            lp = [2 * coeffs1 for n in range(self.Nk)]
+            state = np.zeros(self.state_length_mf, dtype=complex)
+            state[self.Nk * (1 + self.Nnu**2):] = l.flatten()
+            state[:self.Nk] = 0.13338429247292602/np.sqrt(self.Nm)
+            #state[:self.Nk] = 0.1/np.sqrt(self.Nm) # symmetry-breaking
+            state[self.Nk:self.Nk*(1+self.Nnu**2)] = np.array(lp).T.flatten()
+            #pprint(state)
+            return state
         state = np.zeros(self.state_length, dtype=complex)
         state[self.state_dic['l']['slice']] = l.flatten()
         state[-1] = -1 # indicates state has NOT been rescaled
         return state
+
+    def evolve_mf(self, tend=100.0, atol=1e-8, rtol=1e-6):
+        dt_fs = self.params['dt']
+        t_fs = np.arange(0.0, tend+dt_fs/2, step=dt_fs)
+        t = t_fs / self.EV_TO_FS
+        dt = dt_fs / self.EV_TO_FS
+        Nt = len(t)
+        y0 = self.ground_state(mf=True)
+        #pprint(y0)
+        with open('init.pkl', 'rb') as fb:
+            y0 = pickle.load(fb)
+        #pprint(y0)
+        logger.info(f'Integrating mean-field EoMs to tend={tend} using solve_ivp')
+        t0 = time()
+        soln = solve_ivp(self.eoms_mf,
+                         (t[0], t[-1]),
+                         y0,
+                         t_eval=t,
+                         method='DOP853',
+                         atol=atol,
+                         rtol=rtol)
+        ys = soln.y
+        aKs = np.zeros((Nt, self.Nk), dtype=complex)
+        nPs = np.zeros((Nt, self.Nk), dtype=float)
+        nMs = np.zeros((Nt, self.Nk), dtype=float)
+        logger.info(soln.message + ' (runtime {:.1f}s)'.format(time()-t0))
+        for i, y in enumerate(ys.T):
+            a, lp, l0 = self.split_reshape_return_mf(y)
+            a *= np.sqrt(self.Nm)
+            aKs[i,:] = a
+            ar = ifft(a, norm='ortho')
+            nP =  ar.conj() * ar 
+            self.check_real(i, nP, 'Photon number')
+            nPs[i,:] = nP.real
+            nM = self.NE * (contract('a,an->n', self.ocoeffs['pup_l'], l0) + self.ocoeffs['pup_I'])
+            self.check_real(i, nM, 'Photon number')
+            nMs[i,:] = nM.real
+        self.dynamics_mf = {'ak':aKs, 'nP': nPs, 'nM': nMs}
+        with open('results.pkl', 'rb') as fb:
+            other_ts, other_ys = pickle.load(fb)
+        aKs = np.zeros((Nt, self.Nk), dtype=complex)
+        nPs = np.zeros((Nt, self.Nk), dtype=float)
+        nMs = np.zeros((Nt, self.Nk), dtype=float)
+        logger.info(soln.message + ' (runtime {:.1f}s)'.format(time()-t0))
+        for i, y in enumerate(other_ys.T):
+            a, lp, l0 = self.split_reshape_return_mf(y)
+            a *= np.sqrt(self.Nm)
+            aKs[i,:] = a
+            ar = ifft(a, norm='ortho')
+            nP =  ar.conj() * ar 
+            self.check_real(i, nP, 'Photon number')
+            nPs[i,:] = nP.real
+            nM = self.NE * (contract('a,an->n', self.ocoeffs['pup_l'], l0) + self.ocoeffs['pup_I'])
+            print(nM[self.Q0])
+            self.check_real(i, nM, 'Photon number')
+            nMs[i,:] = nM.real
+        self.dynamics_mf2 = {'ak':aKs, 'nP': nPs, 'nM': nMs}
+
     
     def evolve(self, tend=100.0, atol=1e-8, rtol=1e-6):
         """Integrate second-order cumulants equations of motion from t=0 to  t=tend (femptoseconds)"""
@@ -650,7 +754,7 @@ class HTC:
             numer = dft2[n, mid_n]
             demon = np.sqrt(np.abs(np.real(dft2[n,n]) * np.real(dft2[mid_n, mid_n])))
             if np.isclose(demon, 0.0, atol=1e-8):
-                #print('Nearly zero! t_index', t_index, '   n=', n)
+                #logger.info('Nearly zero! t_index', t_index, '   n=', n)
                 g1[n] = np.zeros_like(numer)
             else:
                 g1[n] = numer/demon
@@ -751,6 +855,40 @@ class HTC:
         if copy:
             reshaped = [np.copy(X) for X in reshaped]
         return reshaped
+
+    def split_reshape_return_mf(self, state, copy=False):
+        split = np.split(state, [self.Nk, self.Nk + self.Nnu**2*self.Nk]) # a, lp, l0
+        split[1] = split[1].reshape((self.Nnu**2, self.Nk))
+        split[2] = split[2].reshape((2*self.Nnu**2-1, self.Nk))
+        if copy:
+            split = [np.copy(X) for X in split]
+        return split
+
+    #def eoms_mf(self, t, state):
+    #    #2024-06-21 mf eoms - no spatial dependence in coefficients (untested)
+    #    C = self.mf_coeffs
+    #    a, lp, l0 = self.split_reshape_return_mf(state)
+    #    pre_c = C['iB_1'] @ lp
+    #    c = fft(pre_c, norm='forward')
+    #    alpha = fft(a, norm='backward')
+    #    dy_a = C['11_k'] @ a + c.conj()
+    #    dy_lp = C['21_11'] @ lp + C['22_10'] @ (l0 * alpha.conj())
+    #    dy_l0 = C['31_00'] @ l0 + C['32_0'] + (C['33_01'] @ (lp * alpha)).real
+    #    dy_state = np.concatenate((dy_a, dy_lp, dy_l0), axis=None)
+    #    return dy_state
+    
+    def eoms_mf(self, t, state):
+        #2024-06-21 mf eoms - with spatially dependence pump (untested)
+        C = self.coeffs_mf
+        a, lp, l0 = self.split_reshape_return_mf(state)
+        pre_c = C['iB_1'] @ lp
+        c = fft(pre_c, norm='forward')
+        alpha = fft(a, norm='backward')
+        dy_a = C['11_k'] @ a + c.conj()
+        dy_lp = contract('ijn,jn->in', C['21_11n'], lp) + C['22_10'] @ (l0 * alpha.conj())
+        dy_l0 = contract('abn,bn->an', C['31_00n'], l0) + C['32_0n'] + (C['33_01'] @ (lp * alpha)).real
+        dy_state = np.concatenate((dy_a, dy_lp, dy_l0), axis=None)
+        return dy_state
 
     def eoms(self, t, state):
         # 2024-04-02 elements now with n dependence: 21_00n, 31_11kn, 41_11n, 42_11n
@@ -1425,14 +1563,8 @@ def two_mode_comparison(params, plot_ph=False):
     nP2 = results2['dynamics']['nP']
     nM2 = results2['dynamics']['nM']
     nK2 = results2['dynamics']['nK']
-    #print(fft(ifft(results2['dynamics']['aTMk'][-1,:])))
-    #print(np.abs(results2['dynamics']['aTMk'][-1, :]))
     QL, QR = htc2.QL, htc2.QR
     #adaf = results1['final_state'][:htc1.Nk**2].reshape((htc1.Nk, htc1.Nk))
-    #print(abs(adaf[QL,QL]))
-    #print(abs(adaf[QR,QL]))
-    #print(abs(adaf[QL,QR]))
-    #print(abs(adaf[QR,QR]))
     fig, axes = plt.subplots(2, 2, figsize=(8,8), constrained_layout=True)
     p1 = axes[0,0].plot(t1, nK1[:,QL].real, label=r'$k_L$')
     p2 = axes[0,0].plot(t1, nK1[:,QR].real, label=r'$k_R$')
@@ -1477,6 +1609,26 @@ def two_mode_comparison(params, plot_ph=False):
                    size='large')
     fig.savefig('figures/two-mode_comparison.png', bbox_inches='tight', dpi=400)
 
+def mf_test(params):
+    htc = HTC(params)
+    tf = 100
+    htc.evolve(tf)
+    htc.evolve_mf(tf)
+    fig, axes = plt.subplots(1,2,figsize=(8,4),constrained_layout=True)
+    axes[0].plot(htc.dynamics['t'], np.sum(htc.dynamics['nP'], axis=1), label=r'\rm{C2}')
+    axes[0].plot(htc.dynamics['t'], np.sum(htc.dynamics_mf['nP'], axis=1), label=r'\rm{mf}')
+    axes[0].plot(htc.dynamics['t'], np.sum(htc.dynamics_mf2['nP'], axis=1), label=r'\rm{mf2}', ls='--')
+    axes[0].set_title(r'$\sum_n n_{\text{\rm{ph}}}(r_n,t)$')
+    axes[0].set_xlabel(r'$t$')
+    axes[1].plot(htc.dynamics['t'], np.sum(htc.dynamics['nM'], axis=1), label=r'\rm{C2}')
+    axes[1].plot(htc.dynamics['t'], np.sum(htc.dynamics_mf['nM'], axis=1), label=r'\rm{mf}')
+    axes[1].plot(htc.dynamics['t'], np.sum(htc.dynamics_mf2['nM'], axis=1), label=r'\rm{mf2}', ls='--')
+    axes[1].set_title(r'$\sum_n n_{\text{\rm{M}}}(r_n,t)$')
+    axes[1].set_xlabel(r'$t$')
+    axes[0].legend()
+    axes[1].legend()
+    fig.savefig('figures/mean-field_real_space.png', bbox_inches='tight')
+
 if __name__ == '__main__':
     logging.basicConfig(
         format='%(filename)s L%(lineno)s %(asctime)s %(levelname)s: %(message)s',
@@ -1502,18 +1654,22 @@ if __name__ == '__main__':
             'T':0.026, # k_B T in eV (.026=302K)
             'gam_nu': 1e-03, # vibrational damping rate
             'gam_as': 0.0, # Antistokes decay
+            'as_coherent': False, # True to turn on g(a . sigma^+ . b^- + H.C.) terms
             'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'plasmonic',
             }
+    gn = 0.2
+    NE = 4
+    g = gn /np.sqrt(NE)
     tb_parameters = {
             'Q0': 30, # Chain of Nk = 2*Q0+1 = 51 sites
-            'NE': 4, # Number of emitters per gap
+            'NE': NE, # Number of emitters per gap
             'w': 1, # Gap width, nm (Emitter spacing Delta_r = 2a+w = 81nm) [not used in dynamics calculation]
             'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm) [not used in dynamics]
             'omega_p': 0.0, # Plasmon resonance, eV [not used in tight-binding model]
             'omega_0': 0.0, # Dye resonance, eV [use to control detuning in tight binding model]
             't': 0.1, # hopping parameter, eV [not used in plasmonic model]
-            'g': 0.1, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
+            'g': g, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
             'kappa': 0.1, # photon loss
             'dephase': 0.0, # Emitter pure dephasing
             'pump_strength': 0.1, #  Magnitude of pump strength (changed in plot_input_output below)
@@ -1526,14 +1682,17 @@ if __name__ == '__main__':
             'T':0.026, # k_B T in eV for vibrational environment (.026=302K) [N/A when Nnu=1]
             'gam_nu': 1e-04, # vibrational damping rate [N/A when Nnu=1]
             'gam_as': 0.0, # Antistokes decay
+            'as_coherent': True, # True to turn on g(a . sigma^+ . b^- + H.C.) terms
             'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'tight-binding', # dispersion to use 
             #'model': 'two-node', # tight-binding dispersion... but only counting two modes
             }
     # parameters for two-node: Q0=30, NE=100, g=0.01, t=0.1, 1.0, 5.0
     #pump_strengths = np.logspace(-3, 0.6, num=20) # set pump strength magnitudes for input-output curve
-    pump_strengths = np.logspace(-2, -1, num=2) # set pump strength magnitudes for input-output curve
+    #pump_strengths = np.logspace(-2, 1, num=8) # set pump strength magnitudes for input-output curve
+    pump_strengths = np.array([0.2,0.4,0.8,1.0])
     plot_input_output(tb_parameters.copy(), pump_strengths, tend=100) # all other parameters fixed
+    #tb_parameters['pump_strength'] = 0.2
     #plot_dynamics_and_final_state(tb_parameters.copy()) 
     #two_mode_comparison(tb_parameters, plot_ph=True)
 
