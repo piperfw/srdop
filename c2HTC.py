@@ -1,5 +1,6 @@
 #!/usr/bin/env python
-
+import os
+os.environ['OPENBLAS_NUM_THREADS'] = '2'
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import colormaps
@@ -13,7 +14,8 @@ from scipy.optimize import curve_fit
 from scipy import constants
 from scipy.fft import fft, ifft, fftshift, ifftshift # recommended over numpy.fft
 from scipy.integrate import RK45, DOP853, solve_ivp
-SOLVER = RK45 # Runge-Kutta 4th order
+#SOLVER = RK45 # Runge-Kutta 4th order
+SOLVER = DOP853
 from mpmath import polylog
 try:
     import pretty_traceback
@@ -142,6 +144,7 @@ class HTC:
         params['Nm'] = self.NE * self.Nk # Total number of emitters
         self.Nm = params['Nm']
         params['gSqrtNE'] = params['g'] * np.sqrt(self.NE)
+        params['gSqrtN'] = params['g'] * np.sqrt(self.Nm)
         self.off_diag_indices_Nk = np.where(~np.eye(self.Nk, dtype=bool))
         self.diag_indices_Nk = np.diag_indices(self.Nk)
 
@@ -216,6 +219,7 @@ class HTC:
         self.state_length_mf = np.sum([self.state_dic_mf[name]['num'] for name in self.state_dic_mf]) 
         correct_state_length_mf = Nk + (Nnu**2*Nk) + (2*Nnu**2-1)*Nk
         correct_state_length = Nk**2 + (2*Nnu**2-1)*Nk + Nnu**2*Nk**2 + Nnu**4*Nk**2 + self.added_state_length
+        self.state_split_list_mf.pop()
         assert self.state_length == correct_state_length,\
                 f'state length is {self.state_length} but should be {correct_state_length}'
         assert self.state_length_mf == correct_state_length_mf,\
@@ -244,10 +248,14 @@ class HTC:
                 params['omega_nu']*np.kron(si, bn) +\
                 params['omega_nu']*np.sqrt(params['S'])*np.kron(sz, b+bd) + 0j
         A += 0.25 * (-1j * rates['gam_delta']) * np.kron(si, (bd @ bd - b @ b))
+        # 2024-06-22 : BUG, replace gSqrtN with gSqrtNE * (Sqrt(Nm)/Sqrt(NE)=Sqrt(Nk)) NOT JUST gSqrtNE
+        # Correction: add sNk factors here (also definition of zeta_k - but not currently used?)
+        # sNk = np.sqrt(Nk) B = sNk * params['gSqrtNE'] * np.kron(sp, bi+bd)
+        # Better: just use gSqrtNm
         if params['as_coherent']:
-            B = params['gSqrtNE'] * np.kron(sp, bi+bd)
+            B =  params['gSqrtN'] * np.kron(sp, bi+bd)
         else:
-            B = params['gSqrtNE'] * np.kron(sp, bi)
+            B =  params['gSqrtN'] * np.kron(sp, bi)
         A0_base, _discard = gp.get_coefficients(A, sgn=0, eye=True) # discard part proportional to identity
         consts['A0_n'] = np.outer(A0_base, np.ones(Nk)) # currently no spatial dependence 
         consts['Bp'] = gp.get_coefficients(B, sgn=1) # N.B. gets i_+ coefficients i.e. traces against lambda_{i_-}
@@ -343,7 +351,7 @@ class HTC:
             coeffs['34_1kn0'] *= Nm * sNm
             coeffs['35_1kn'] *= Nm * sNm
         # HOPFIELD coefficients (in shifted basis i.e. K=0,1,2,...,Q0,-Q0,-Q0+1,....-1
-        consts['zeta_k'] = 0.5 * np.sqrt( (params['omega_0'] - consts['omega'])**2 + 4 * params['gSqrtNE']**2 )
+        consts['zeta_k'] = 0.5 * np.sqrt( (params['omega_0'] - consts['omega'])**2 + 4 * params['gSqrtN']**2 )
         coeffs['X_k'] = np.sqrt(0.5  + 0.5**2 * (params['omega_0'] - consts['omega'])/consts['zeta_k'])
         coeffs['Y_k'] = np.sqrt(0.5  - 0.5**2 * (params['omega_0'] - consts['omega'])/consts['zeta_k'])
         assert np.allclose(coeffs['X_k']**2+coeffs['Y_k']**2, 1.0), 'Hopfield coeffs. not normalised'
@@ -509,7 +517,8 @@ class HTC:
     def ground_state(self, mf=False):
         if mf:
             logger.info(f'Creating mean-field initial state (ground state) with small symmetry breaking')
-            pex = 2.2208628880360237e-07
+            #pex = 2.2208628880360237e-07
+            pex = 0.0
         else:
             logger.info(f'Creating initial state with 0 photons/excitons + thermal vibrational populations')
             pex = 0.0 # initial excited state population of emitters
@@ -521,13 +530,15 @@ class HTC:
         l = np.real(l).T # i_0 index first, then ensemble index n
         self.all_eye0s = [eye0 for n in range(self.Nk)] # only needed if want to recreate density matrix on a site
         if mf:
-            coeffs1 = (-0.0004712602672110967) * self.gp.get_coefficients(Pauli.p, sgn=1)
-            lp = [2 * coeffs1 for n in range(self.Nk)]
+            #coeffs1 = (-0.0004712602672110967) * self.gp.get_coefficients(Pauli.p, sgn=1)
+            #coeffs1 = (-0.0004712602672110967) * self.gp.get_coefficients(Pauli.p, sgn=1)
+            #lp = [2 * coeffs1 for n in range(self.Nk)]
             state = np.zeros(self.state_length_mf, dtype=complex)
+            #state[:self.Nk] = 0.13338429247292602/np.sqrt(self.Nm)
+            state[:self.Nk] = 0.1
             state[self.Nk * (1 + self.Nnu**2):] = l.flatten()
-            state[:self.Nk] = 0.13338429247292602/np.sqrt(self.Nm)
             #state[:self.Nk] = 0.1/np.sqrt(self.Nm) # symmetry-breaking
-            state[self.Nk:self.Nk*(1+self.Nnu**2)] = np.array(lp).T.flatten()
+            #state[self.Nk:self.Nk*(1+self.Nnu**2)] = np.array(lp).T.flatten()
             #pprint(state)
             return state
         state = np.zeros(self.state_length, dtype=complex)
@@ -535,17 +546,22 @@ class HTC:
         state[-1] = -1 # indicates state has NOT been rescaled
         return state
 
-    def evolve_mf(self, tend=100.0, atol=1e-8, rtol=1e-6):
+    def evolve_mf(self, tend=100.0, atol=1e-8, rtol=1e-6, y0=None):
         dt_fs = self.params['dt']
         t_fs = np.arange(0.0, tend+dt_fs/2, step=dt_fs)
         t = t_fs / self.EV_TO_FS
         dt = dt_fs / self.EV_TO_FS
         Nt = len(t)
-        y0 = self.ground_state(mf=True)
-        #pprint(y0)
-        with open('init.pkl', 'rb') as fb:
-            y0 = pickle.load(fb)
-        #pprint(y0)
+        #y0 = self.ground_state(mf=True)
+        if y0 is None:
+            y0 = self.ground_state(mf=True)
+        #if ak0s is not None:
+        #    y0[:self.Nk] = ak0s
+        #print(len(y0))
+        #with open('init.pkl', 'rb') as fb:
+        #    y0 = pickle.load(fb)
+        ##pprint(y0)
+        #print(len(y0))
         logger.info(f'Integrating mean-field EoMs to tend={tend} using solve_ivp')
         t0 = time()
         soln = solve_ivp(self.eoms_mf,
@@ -561,6 +577,7 @@ class HTC:
         nMs = np.zeros((Nt, self.Nk), dtype=float)
         logger.info(soln.message + ' (runtime {:.1f}s)'.format(time()-t0))
         for i, y in enumerate(ys.T):
+            #print(len(y))
             a, lp, l0 = self.split_reshape_return_mf(y)
             a *= np.sqrt(self.Nm)
             aKs[i,:] = a
@@ -572,25 +589,25 @@ class HTC:
             self.check_real(i, nM, 'Photon number')
             nMs[i,:] = nM.real
         self.dynamics_mf = {'ak':aKs, 'nP': nPs, 'nM': nMs}
-        with open('results.pkl', 'rb') as fb:
-            other_ts, other_ys = pickle.load(fb)
-        aKs = np.zeros((Nt, self.Nk), dtype=complex)
-        nPs = np.zeros((Nt, self.Nk), dtype=float)
-        nMs = np.zeros((Nt, self.Nk), dtype=float)
-        logger.info(soln.message + ' (runtime {:.1f}s)'.format(time()-t0))
-        for i, y in enumerate(other_ys.T):
-            a, lp, l0 = self.split_reshape_return_mf(y)
-            a *= np.sqrt(self.Nm)
-            aKs[i,:] = a
-            ar = ifft(a, norm='ortho')
-            nP =  ar.conj() * ar 
-            self.check_real(i, nP, 'Photon number')
-            nPs[i,:] = nP.real
-            nM = self.NE * (contract('a,an->n', self.ocoeffs['pup_l'], l0) + self.ocoeffs['pup_I'])
-            print(nM[self.Q0])
-            self.check_real(i, nM, 'Photon number')
-            nMs[i,:] = nM.real
-        self.dynamics_mf2 = {'ak':aKs, 'nP': nPs, 'nM': nMs}
+        #with open('results.pkl', 'rb') as fb:
+        #    other_ts, other_ys = pickle.load(fb)
+        #aKs = np.zeros((Nt, self.Nk), dtype=complex)
+        #nPs = np.zeros((Nt, self.Nk), dtype=float)
+        #nMs = np.zeros((Nt, self.Nk), dtype=float)
+        #logger.info(soln.message + ' (runtime {:.1f}s)'.format(time()-t0))
+        #for i, y in enumerate(other_ys.T):
+        #    a, lp, l0 = self.split_reshape_return_mf(y)
+        #    a *= np.sqrt(self.Nm)
+        #    aKs[i,:] = a
+        #    ar = ifft(a, norm='ortho')
+        #    nP =  ar.conj() * ar 
+        #    self.check_real(i, nP, 'Photon number')
+        #    nPs[i,:] = nP.real
+        #    nM = self.NE * (contract('a,an->n', self.ocoeffs['pup_l'], l0) + self.ocoeffs['pup_I'])
+        #    #print(nM[self.Q0])
+        #    self.check_real(i, nM, 'Photon number')
+        #    nMs[i,:] = nM.real
+        #self.dynamics_mf2 = {'ak':aKs, 'nP': nPs, 'nM': nMs}
 
     
     def evolve(self, tend=100.0, atol=1e-8, rtol=1e-6):
@@ -608,7 +625,7 @@ class HTC:
         self.setup_dynamics_storage() # creates self.dynamics data dictionary
         #
         t_index = 0 # indicates current position in output grid of times
-        num_checkpoints = 11 # checkpoints at 0, 10%, 20%,...
+        num_checkpoints = 5 # checkpoints at 0, 25%,...
         checkpoint_spacing = int(round(self.num_t/num_checkpoints))
         checkpoints = np.linspace(0, self.num_t-1, num=num_checkpoints, dtype=int)
         next_check_i = 1
@@ -731,6 +748,8 @@ class HTC:
         self.calculate_photonic(t_index, ada) # Photon exciton densities
         self.calculate_electronic(t_index, l, ll) # Electronic and bright state densities 
         self.calculate_vibronic(t_index, l) # vibrational populations for emitters in each gap
+        #if t_index % 100 == 0:
+        #    print(' - '.join(['{:.2g}'.format(np.max(np.abs(X))) for X in [ada, l, al, ll]]))
 
     def calculate_photonic(self, t_index, ada):
         nk = fftshift(np.diag(ada))
@@ -857,12 +876,18 @@ class HTC:
         return reshaped
 
     def split_reshape_return_mf(self, state, copy=False):
-        split = np.split(state, [self.Nk, self.Nk + self.Nnu**2*self.Nk]) # a, lp, l0
-        split[1] = split[1].reshape((self.Nnu**2, self.Nk))
-        split[2] = split[2].reshape((2*self.Nnu**2-1, self.Nk))
+        split = np.split(state, self.state_split_list_mf)
+        reshaped = [split[i].reshape(self.state_reshape_list_mf[i]) for \
+                    i in range(len(self.state_reshape_list_mf))]
+        #split = np.split(state, [self.Nk, self.Nk + self.Nnu**2*self.Nk]) # a, lp, l0
+        #split[1] = split[1].reshape((self.Nnu**2, self.Nk))
+        #split[2] = split[2].reshape((2*self.Nnu**2-1, self.Nk))
+        #if copy:
+        #    split = [np.copy(X) for X in split]
+        #return split
         if copy:
-            split = [np.copy(X) for X in split]
-        return split
+            reshaped = [np.copy(X) for X in reshaped]
+        return reshaped
 
     #def eoms_mf(self, t, state):
     #    #2024-06-21 mf eoms - no spatial dependence in coefficients (untested)
@@ -1330,7 +1355,7 @@ class HTC:
         mask = diff < - delta # delta for numerical tolerance
         return mask, diff 
 
-def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True):
+def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True, xlims=None):
     # 2024-04-16
     params = parameters
     num_pumps = len(pump_strengths)
@@ -1356,7 +1381,7 @@ def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True):
         htc = HTC(parameters)
         results = htc.evolve(tend=tend)
         nph_final[i, :] = results['dynamics']['nP'][-1, :]
-        nK_final[i, :] = results['dynamics']['nK'][-1, :]
+        nK_final[i, :] = results['dynamics']['nK'][-1, :] # already fftshifted to ascending order
         nM_final[i, :] = results['dynamics']['nM'][-1, :]
         nvpop_final[i, :] = results['dynamics']['vpop'][-1, -1,:] # highest vibrational state (irrespective of electronic state)
         ada, l, al, ll = htc.split_reshape_return(results['final_state'],
@@ -1394,10 +1419,10 @@ def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True):
     axes[0,0].set_xscale('log') # Log x-axis
     axes[0,0].set_yscale('log') # Log y-axis
     #axes[0,2].set_yscale('log') # Log y-axis
-    num_cross_sections = min(5, num_pumps)  # maximum number of cross-sections
+    num_cross_sections = min(6, num_pumps)  # maximum number of cross-sections
     select_indices = np.round(np.linspace(0, num_pumps-1, num_cross_sections)).astype(int)
     for i in select_indices:
-        axes[0,1].plot(htc.ns, nph_final[i, :], label=r'${}$'.format(round(ratios[i],5)))
+        axes[0,1].plot(htc.Ks, nph_final[i, :], label=r'${}$'.format(round(ratios[i],5)))
     #axes[0,1].set_yscale('log') # Log y-axis
     axes[0,1].set_title(r'$n_{{\text{{ph}}}}(r_n)$'.format(tend))
     #axes[0,1].set_title(r'$n_{{\text{{ph}}}}(t={}, r_n)$'.format(tend))
@@ -1414,21 +1439,23 @@ def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True):
     chosen_nu = htc.Nnu - 1
     for i in select_indices:
         plabel = r'${}$'.format(round(ratios[i],5))
-        axes[1,1].plot(htc.ns, 2*nM_final[i, :]/htc.NE-1, label=plabel)
-        axes[2,0].plot(htc.ns, gvpops_final[i, chosen_nu, :], label=plabel)
-        axes[2,1].plot(htc.ns, evpops_final[i, chosen_nu, :], label=plabel)
+        axes[1,1].plot(htc.Ks, 2*nM_final[i, :]/htc.NE-1, label=plabel)
+        axes[2,0].plot(htc.Ks, gvpops_final[i, chosen_nu, :], label=plabel)
+        axes[2,1].plot(htc.Ks, evpops_final[i, chosen_nu, :], label=plabel)
         #axes[2,2].plot(htc.ns, evpops_final[i, chosen_nu, :]+gvpops_final[i, chosen_nu, :], label=plabel)
         #axes[2,2].plot(htc.rs, evpops_final[i, -1, :], label=plabel)
         #axes[0,2].plot(htc.ns, np.abs(span_final[i]), label=plabel) 
-        axes[0,2].plot(htc.ns, np.gradient(nph_final[i]), label=plabel) 
-        axes[2,2].plot(htc.ns, np.real(Js_final[i]), label=plabel)
+        axes[0,2].plot(htc.Ks, np.gradient(nph_final[i]), label=plabel) 
+        #axes[2,2].plot(htc.ns, np.real(Js_final[i]), label=plabel)
         #axes[2,2].plot(htc.ns, np.imag(Js_final[i]), label=plabel) # almost 0
+        axes[2,2].plot(htc.Ks, np.real(nK_final[i]), label=plabel)
     pump_title = r'$\Gamma_\uparrow(L/2)/\Gamma_\downarrow$'
     axes[1,1].legend(title=pump_title)
     #axes[0,2].set_title(r'$\left\lvert \langle a(r_n) \sigma^+(r_n) \rangle \right\rvert$')
     #axes[0,2].set_title(r'$\lvert \nabla \cdot n_{nm}\rvert_{nn}$')
     axes[0,2].set_title(r'$\nabla n_{{\text{{ph}}}}(r_n)$')
-    axes[2,2].set_title(r'$J_n = J^R_n-J^L_n$')
+    axes[2,2].set_title(r'$\langle a^\dagger_k a_k \rangle $')
+    #axes[2,2].set_title(r'$J_n = J^R_n-J^L_n$')
     axes[0,2].legend(title=pump_title)
     #axes[2,0].set_xlabel(r'$r_n (\mu \text{\rm{m}})$')
     #axes[2,1].set_xlabel(r'$r_n (\mu \text{\rm{m}})$')
@@ -1437,10 +1464,16 @@ def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True):
     axes[2,0].set_title(r'\rm{pop. } ' + r'$\lvert g,\nu={} \rangle$'.format(chosen_nu))
     axes[2,1].set_title(r'\rm{pop. } ' + r'$\lvert e,\nu={} \rangle$'.format(chosen_nu))
     #axes[2,2].set_title(r'\rm{pop. } ' + r'$\lvert \nu={} \rangle$'.format(chosen_nu))
-    axes[2,2].set_title(r'$J_n$')
+    #axes[2,2].set_title(r'$J_n$')
     axes[2,0].legend(title=pump_title)
     axes[2,1].legend(title=pump_title)
     axes[2,2].legend(title=pump_title)
+    if xlims is not None:
+        axes[0,1].set_xlim(xlims)
+        axes[0,2].set_xlim(xlims)
+        axes[1,1].set_xlim(xlims)
+        axes[2,0].set_xlim(xlims)
+        axes[2,1].set_xlim(xlims)
     #axes[2,2].set_axis_off()
     #axes[1,2].set_axis_off()
     params = htc.params
@@ -1449,7 +1482,7 @@ def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True):
             [r'$N_E={}$'.format(htc.NE),
              r'$\kappa={}$'.format(params['kappa']),
              r'$t={}$'.format(params['t']),
-             r'$g={}$'.format(params['g']),
+             r'$g\sqrt{{N_E}}={:.3g}$'.format(params['gSqrtNE']),
              r'$\Gamma_z={}$'.format(params['dephase']),
              r'$\Gamma_\downarrow={}$'.format(params['decay']),
              r'\rm{{pumpwidth}}$\ ={}$ \rm{{sites}}'.format(pump_width),
@@ -1610,19 +1643,26 @@ def two_mode_comparison(params, plot_ph=False):
     fig.savefig('figures/two-mode_comparison.png', bbox_inches='tight', dpi=400)
 
 def mf_test(params):
+    assert params['Nnu'] == 1
     htc = HTC(params)
     tf = 100
-    htc.evolve(tf)
-    htc.evolve_mf(tf)
+    results = htc.evolve(tf)
+    ada, l, al, ll = htc.split_reshape_return(results['final_state'])
+    nk = fftshift(np.diag(ada))
+    ak0s = np.sqrt(nk/htc.Nm)
+    l0s = l[0]
+    lp0s = np.sqrt(ll[0,0][htc.diag_indices_Nk])
+    y0 = np.concatenate((ak0s, lp0s, l0s),axis=None)
+    htc.evolve_mf(tf, y0=y0)
     fig, axes = plt.subplots(1,2,figsize=(8,4),constrained_layout=True)
     axes[0].plot(htc.dynamics['t'], np.sum(htc.dynamics['nP'], axis=1), label=r'\rm{C2}')
     axes[0].plot(htc.dynamics['t'], np.sum(htc.dynamics_mf['nP'], axis=1), label=r'\rm{mf}')
-    axes[0].plot(htc.dynamics['t'], np.sum(htc.dynamics_mf2['nP'], axis=1), label=r'\rm{mf2}', ls='--')
+    #axes[0].plot(htc.dynamics['t'], np.sum(htc.dynamics_mf2['nP'], axis=1), label=r'\rm{mf2}', ls='--')
     axes[0].set_title(r'$\sum_n n_{\text{\rm{ph}}}(r_n,t)$')
     axes[0].set_xlabel(r'$t$')
     axes[1].plot(htc.dynamics['t'], np.sum(htc.dynamics['nM'], axis=1), label=r'\rm{C2}')
     axes[1].plot(htc.dynamics['t'], np.sum(htc.dynamics_mf['nM'], axis=1), label=r'\rm{mf}')
-    axes[1].plot(htc.dynamics['t'], np.sum(htc.dynamics_mf2['nM'], axis=1), label=r'\rm{mf2}', ls='--')
+    #axes[1].plot(htc.dynamics['t'], np.sum(htc.dynamics_mf2['nM'], axis=1), label=r'\rm{mf2}', ls='--')
     axes[1].set_title(r'$\sum_n n_{\text{\rm{M}}}(r_n,t)$')
     axes[1].set_xlabel(r'$t$')
     axes[0].legend()
@@ -1635,7 +1675,7 @@ if __name__ == '__main__':
         level=logging.INFO,
         datefmt='%H:%M')
     plasmon_parameters = {
-            'Q0': 61, # N_k = 2*Q0+1 nanoparticles (123)
+            'Q0': 30, # N_k = 2*Q0+1 nanoparticles (123)
             'NE': 4, # Number of emitters per gap
             'w': 1, # Gap width, nm (Emitter spacing Delta_r = 2a+w = 81nm)
             'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm)
@@ -1660,7 +1700,7 @@ if __name__ == '__main__':
             }
     gn = 0.2
     NE = 4
-    g = gn /np.sqrt(NE)
+    g = gn/np.sqrt(NE)
     tb_parameters = {
             'Q0': 30, # Chain of Nk = 2*Q0+1 = 51 sites
             'NE': NE, # Number of emitters per gap
@@ -1682,16 +1722,28 @@ if __name__ == '__main__':
             'T':0.026, # k_B T in eV for vibrational environment (.026=302K) [N/A when Nnu=1]
             'gam_nu': 1e-04, # vibrational damping rate [N/A when Nnu=1]
             'gam_as': 0.0, # Antistokes decay
-            'as_coherent': True, # True to turn on g(a . sigma^+ . b^- + H.C.) terms
-            'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
+            'as_coherent': False, # True to turn on g(a . sigma^+ . b^- + H.C.) terms
+            'dt': 1.0, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'tight-binding', # dispersion to use 
             #'model': 'two-node', # tight-binding dispersion... but only counting two modes
             }
+    #mf_parameters = plasmon_parameters.copy() # a and coherences decay..
+    #mf_parameters = tb_parameters.copy() # a diverges)
+    #mf_parameters['dt'] = 1.0
+    #mf_parameters['Q0'] = 30
+    #mf_parameters['NE'] = 100
+    #mf_parameters['g'] = 0.2 / np.sqrt(100)
+    #mf_test(mf_parameters)
+    #sys.exit()
+    #
     # parameters for two-node: Q0=30, NE=100, g=0.01, t=0.1, 1.0, 5.0
     #pump_strengths = np.logspace(-3, 0.6, num=20) # set pump strength magnitudes for input-output curve
-    #pump_strengths = np.logspace(-2, 1, num=8) # set pump strength magnitudes for input-output curve
-    pump_strengths = np.array([0.2,0.4,0.8,1.0])
-    plot_input_output(tb_parameters.copy(), pump_strengths, tend=100) # all other parameters fixed
+    #pump_strengths = np.logspace(0, 1, num=6) # set pump strength magnitudes for input-output curve
+    #pump_strengths = [100*0.05] # set pump strength magnitudes for input-output curve
+    #plot_input_output(tb_parameters.copy(), pump_strengths, tend=100) # all other parameters fixed
+    GD = tb_parameters['decay']
+    pump_strengths = [GD, 5*GD, 25*GD, 50*GD, 100*GD]
+    plot_input_output(tb_parameters.copy(), pump_strengths, tend=100, xlims=[-30,30]) 
     #tb_parameters['pump_strength'] = 0.2
     #plot_dynamics_and_final_state(tb_parameters.copy()) 
     #two_mode_comparison(tb_parameters, plot_ph=True)
