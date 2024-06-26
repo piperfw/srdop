@@ -144,7 +144,6 @@ class HTC:
         params['Nm'] = self.NE * self.Nk # Total number of emitters
         self.Nm = params['Nm']
         params['gSqrtNE'] = params['g'] * np.sqrt(self.NE)
-        params['gSqrtN'] = params['g'] * np.sqrt(self.Nm)
         self.off_diag_indices_Nk = np.where(~np.eye(self.Nk, dtype=bool))
         self.diag_indices_Nk = np.diag_indices(self.Nk)
 
@@ -252,10 +251,11 @@ class HTC:
         # Correction: add sNk factors here (also definition of zeta_k - but not currently used?)
         # sNk = np.sqrt(Nk) B = sNk * params['gSqrtNE'] * np.kron(sp, bi+bd)
         # Better: just use gSqrtNm
+        # 2024-06-26: NOT a bug
         if params['as_coherent']:
-            B =  params['gSqrtN'] * np.kron(sp, bi+bd)
+            B =  params['gSqrtNE'] * np.kron(sp, bi+bd)
         else:
-            B =  params['gSqrtN'] * np.kron(sp, bi)
+            B =  params['gSqrtNE'] * np.kron(sp, bi)
         A0_base, _discard = gp.get_coefficients(A, sgn=0, eye=True) # discard part proportional to identity
         consts['A0_n'] = np.outer(A0_base, np.ones(Nk)) # currently no spatial dependence 
         consts['Bp'] = gp.get_coefficients(B, sgn=1) # N.B. gets i_+ coefficients i.e. traces against lambda_{i_-}
@@ -351,10 +351,10 @@ class HTC:
             coeffs['34_1kn0'] *= Nm * sNm
             coeffs['35_1kn'] *= Nm * sNm
         # HOPFIELD coefficients (in shifted basis i.e. K=0,1,2,...,Q0,-Q0,-Q0+1,....-1
-        consts['zeta_k'] = 0.5 * np.sqrt( (params['omega_0'] - consts['omega'])**2 + 4 * params['gSqrtN']**2 )
-        coeffs['X_k'] = np.sqrt(0.5  + 0.5**2 * (params['omega_0'] - consts['omega'])/consts['zeta_k'])
-        coeffs['Y_k'] = np.sqrt(0.5  - 0.5**2 * (params['omega_0'] - consts['omega'])/consts['zeta_k'])
-        assert np.allclose(coeffs['X_k']**2+coeffs['Y_k']**2, 1.0), 'Hopfield coeffs. not normalised'
+        #consts['zeta_k'] = 0.5 * np.sqrt( (params['omega_0'] - consts['omega'])**2 + 4 * params['gSqrtN']**2 )
+        #coeffs['X_k'] = np.sqrt(0.5  + 0.5**2 * (params['omega_0'] - consts['omega'])/consts['zeta_k'])
+        #coeffs['Y_k'] = np.sqrt(0.5  - 0.5**2 * (params['omega_0'] - consts['omega'])/consts['zeta_k'])
+        #assert np.allclose(coeffs['X_k']**2+coeffs['Y_k']**2, 1.0), 'Hopfield coeffs. not normalised'
         consts['vsigma'] = gp.get_coefficients(np.kron(sp, bi), sgn=1, eye=False)
         assert np.allclose(consts['vsigma'].imag, 0.0)
         consts['vvsigma'] = self.Nnu/2
@@ -1699,7 +1699,7 @@ if __name__ == '__main__':
             'model': 'plasmonic',
             }
     gn = 0.2
-    NE = 4
+    NE = 16
     g = gn/np.sqrt(NE)
     tb_parameters = {
             'Q0': 30, # Chain of Nk = 2*Q0+1 = 51 sites
@@ -1742,7 +1742,7 @@ if __name__ == '__main__':
     #pump_strengths = [100*0.05] # set pump strength magnitudes for input-output curve
     #plot_input_output(tb_parameters.copy(), pump_strengths, tend=100) # all other parameters fixed
     GD = tb_parameters['decay']
-    pump_strengths = [GD, 5*GD, 25*GD, 50*GD, 100*GD]
+    pump_strengths = [GD, 5*GD, 10*GD, 20*GD]
     plot_input_output(tb_parameters.copy(), pump_strengths, tend=100, xlims=[-30,30]) 
     #tb_parameters['pump_strength'] = 0.2
     #plot_dynamics_and_final_state(tb_parameters.copy()) 
