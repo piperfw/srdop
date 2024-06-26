@@ -388,10 +388,27 @@ class HTC:
             logger.info(f'Quarter mode at {QL} compared to N_k/4 = {Nk/4} has omega_k = '\
                     f'{self.omega(self.Ks[QL]):.2g}')
             mask_1d = np.ones(Nk, dtype=bool)
-            mask_1d[QL], mask_1d[QR] = False, False
+            self.MORE_MODES = False
+            num_about = 0
+            if num_about >= Qhalf:
+                more_modes = self.Ks
+                self.num_modes = self.Nk
+            else:
+                self.num_modes = 4*num_about+2
+                more_modes = [QL + x for x in range(-num_about,num_about+1)] + [QR + x for x in range(-num_about,num_about+1)]
+            if self.MORE_MODES:
+                for Q in more_modes:
+                    mask_1d[Q] = False
+            else:
+                num_about = 0
+                mask_1d[QL], mask_1d[QR] = False, False
             mask_2d = np.ones((Nk, Nk), dtype=bool)
-            mask_2d[QL] = mask_1d
-            mask_2d[QR] = mask_1d
+            if self.MORE_MODES:
+                for Q in more_modes:
+                    mask_2d[Q] = mask_1d
+            else:
+                mask_2d[QL] = mask_1d
+                mask_2d[QR] = mask_1d
             self.mode_mask = {}
             self.mode_mask['ada'] = ifftshift(mask_2d)
             self.mode_mask['ada_args'] = np.where(self.mode_mask['ada'])
@@ -1602,8 +1619,8 @@ def two_mode_comparison(params, plot_ph=False):
     p1 = axes[0,0].plot(t1, nK1[:,QL].real, label=r'$k_L$')
     p2 = axes[0,0].plot(t1, nK1[:,QR].real, label=r'$k_R$')
     axes[0,0].set_xlabel(r'$t$ \rm{(fs)}')
-    axes[0,0].plot(t2, nK2[:,QL].real, ls='--', color=p1[-1].get_color(), label=r'$k_L$ \rm{(two-mode)}')
-    axes[0,0].plot(t2, nK2[:,QR].real, ls='--', color=p2[-1].get_color(), label=r'$k_R$ \rm{(two-mode)}')
+    axes[0,0].plot(t2, nK2[:,QL].real, ls='--', color=p1[-1].get_color(), label=r'$k_L$ \rm{{({}-mode)}}'.format(htc2.num_modes))
+    axes[0,0].plot(t2, nK2[:,QR].real, ls='--', color=p2[-1].get_color(), label=r'$k_R$ \rm{{({}-mode)}}'.format(htc2.num_modes))
     axes[0,0].legend()
     axes[0,0].set_title(r'$\langle a_k^\dagger a_k^{\phantom{\dagger}} \rangle(t)$')
     axes[1,0].set_title(r'$\langle a_k^\dagger a_k^{\phantom{\dagger}} \rangle(t_f)$')
@@ -1611,11 +1628,11 @@ def two_mode_comparison(params, plot_ph=False):
     if plot_ph:
         axes[1,1].set_title(htc1.labels['Eph']+r'$(r_n, t_f)$')
         p = axes[1,1].plot(htc1.rs, nP1[-1,:], label=r'\rm{full}')
-        axes[1,1].plot(htc2.rs, nP2[-1,:], ls='--', color=p[-1].get_color(), label=r'\rm{two-mode}')
+        axes[1,1].plot(htc2.rs, nP2[-1,:], ls='--', color=p[-1].get_color(), label=r'$k_R$ \rm{{({}-mode)}}'.format(htc2.num_modes))
     else:
         axes[1,1].set_title(htc1.labels['EnM']+r'$(r_n, t_f)$')
         p = axes[1,1].plot(htc1.rs, nM1[-1,:], label=r'\rm{full}')
-        axes[1,1].plot(htc2.rs, nM2[-1,:], ls='--', color=p[-1].get_color(), label=r'\rm{two-mode}')
+        axes[1,1].plot(htc2.rs, nM2[-1,:], ls='--', color=p[-1].get_color(),  label=r'$k_R$ \rm{{({}-mode)}}'.format(htc2.num_modes))
     #axes[0,1].set_axis_off()
     axes[1,1].set_xlabel(htc1.labels['rn'])
     axes[1,1].legend()
@@ -1699,7 +1716,7 @@ if __name__ == '__main__':
             'model': 'plasmonic',
             }
     gn = 0.2
-    NE = 16
+    NE = 4
     g = gn/np.sqrt(NE)
     tb_parameters = {
             'Q0': 30, # Chain of Nk = 2*Q0+1 = 51 sites
@@ -1741,10 +1758,10 @@ if __name__ == '__main__':
     #pump_strengths = np.logspace(0, 1, num=6) # set pump strength magnitudes for input-output curve
     #pump_strengths = [100*0.05] # set pump strength magnitudes for input-output curve
     #plot_input_output(tb_parameters.copy(), pump_strengths, tend=100) # all other parameters fixed
-    GD = tb_parameters['decay']
-    pump_strengths = [GD, 5*GD, 10*GD, 20*GD]
-    plot_input_output(tb_parameters.copy(), pump_strengths, tend=100, xlims=[-30,30]) 
+    #GD = tb_parameters['decay']
+    #pump_strengths = [GD, 5*GD, 10*GD, 20*GD]
+    #plot_input_output(tb_parameters.copy(), pump_strengths, tend=100, xlims=[-30,30]) 
     #tb_parameters['pump_strength'] = 0.2
     #plot_dynamics_and_final_state(tb_parameters.copy()) 
-    #two_mode_comparison(tb_parameters, plot_ph=True)
+    two_mode_comparison(tb_parameters, plot_ph=True)
 
