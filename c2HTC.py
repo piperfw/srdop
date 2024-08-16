@@ -722,6 +722,7 @@ class HTC:
         nMs = np.zeros((Nt, self.Nk), dtype=float)
         nBs = np.zeros((Nt, self.Nk), dtype=float)
         g1s = np.zeros((Nt, self.Nk), dtype=complex)
+        g1RRs = np.zeros((Nt, self.Q0+1), dtype=complex)
         #g1s = np.zeros((Nt, self.Nk, self.Nk), dtype=complex)
         Vs = np.zeros((Nt, self.Q0+1), dtype=float)
         vpops = np.zeros((Nt, self.Nnu, self.Nk), dtype=float) # 2024-05-05 r_n index now last
@@ -735,6 +736,7 @@ class HTC:
                          'nM': nMs,
                          'nB': nBs,
                          'g1': g1s,
+                         'g1RR': g1RRs,
                          'V': Vs, 
                          'vpop': vpops,
                          'ph_dic':ph_dic,
@@ -794,6 +796,13 @@ class HTC:
                 g1[n] = np.zeros_like(numer)
             else:
                 g1[n] = numer/demon
+        # 2024-08-16 Calculate g^(1)(R,-R) for R=0,1,...,Q0 (R=0 meaning the centre)
+        g1RR = np.zeros(self.Q0+1, dtype=complex)
+        for n in range(self.Q0+1):
+            numer = dft2[mid_n - n, mid_n + n]
+            denom = np.sqrt(np.abs(np.real(dft2[mid_n - n, mid_n - n]) * np.real(dft2[mid_n + n, mid_n + n])))
+            if not np.isclose(demon, 0.0, atol=1e-8):
+                g1RR[n] = numer / denom
         # 2024-04-05 - calculate g^(1)(r,r')
         #g1 = np.zeros((self.Nk, self.Nk), dtype=complex)
         #for n1 in self.ns:
@@ -817,6 +826,7 @@ class HTC:
         self.dynamics['nP'][t_index] = np.real(nph)
         self.dynamics['nK'][t_index] = np.real(nk)
         self.dynamics['g1'][t_index] = g1
+        self.dynamics['g1RR'][t_index] = g1RR
         self.dynamics['V'][t_index] = V
         # Moments for photon density dic
         self.dynamics['ph_dic']['vals'][t_index] = np.real(nph)
@@ -1069,8 +1079,9 @@ class HTC:
         ax2.set_xlabel(self.labels['rn'])
         ax2.set_title(r'Vibrational populations')
         ax3.plot(self.rs, np.abs(self.dynamics['g1'][-1]), label=r'$\lvert g^{(1)}(r_n) \rvert$')
-        ax4.plot(self.rs[self.Q0:], self.dynamics['V'][-1], label=r'$V(r_n)$')
-        #ax3.plot(self.rs[:self.Q0+1], self.dynamics['V'][-1], label=r'$V(R)$')
+        ax4.plot(self.rs[self.Q0:], np.abs(self.dynamics['g1RR'][-1]), label=r'$\lvert g^{(1)}(r_n,-r_n)\rvert$', marker='.') # g^(1)(R,-R)
+        #ax4.plot(self.rs[self.Q0:], self.dynamics['V'][-1], label=r'$V(r_n)$') # VISIBILITY
+        #ax3.plot(self.rs[:self.Q0+1], self.dynamics['V'][-1], label=r'$V(R)$') # ?
         #ax3.set_title(r'$\lvert g^{(1)}(r_n) \rvert$')
         all_ns = np.linspace(0, self.Nk, 250)
         all_rs = self.params['delta_r'] * all_ns * 1e-03
@@ -1715,23 +1726,23 @@ if __name__ == '__main__':
             'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'plasmonic',
             }
-    gn = 0.2
-    NE = 4
+    gn = 2*np.sqrt(2)
+    NE = 200
     g = gn/np.sqrt(NE)
     tb_parameters = {
-            'Q0': 30, # Chain of Nk = 2*Q0+1 = 51 sites
+            'Q0': 60, # Chain of Nk = 2*Q0+1 = 51 sites
             'NE': NE, # Number of emitters per gap
             'w': 1, # Gap width, nm (Emitter spacing Delta_r = 2a+w = 81nm) [not used in dynamics calculation]
             'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm) [not used in dynamics]
             'omega_p': 0.0, # Plasmon resonance, eV [not used in tight-binding model]
             'omega_0': 0.0, # Dye resonance, eV [use to control detuning in tight binding model]
-            't': 0.1, # hopping parameter, eV [not used in plasmonic model]
+            't': 0.9, # hopping parameter, eV [not used in plasmonic model]
             'g': g, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
             'kappa': 0.1, # photon loss
             'dephase': 0.0, # Emitter pure dephasing
             'pump_strength': 0.1, #  Magnitude of pump strength (changed in plot_input_output below)
             #'pump_width': 324, # Pump spot width, nm (4 sites = 4 * Delta r = 4 * 81 = 324nm)
-            'pump_width': 229, # Pump spot width, nm, to match JB Aexp{-((n-25)/4)^2} (see def gaussian above)
+            'pump_width': 2*229, # Pump spot width, nm, to match JB Aexp{-((n-25)/4)^2} (see def gaussian above)
             'decay': 0.05, # Emitter non-resonant decay
             'Nnu': 1, # Number of vibrational levels for each emitter
             'S': 0.1, # Huang-Rhys parameter [Not relevant if Nnu=1]
@@ -1740,7 +1751,7 @@ if __name__ == '__main__':
             'gam_nu': 1e-04, # vibrational damping rate [N/A when Nnu=1]
             'gam_as': 0.0, # Antistokes decay
             'as_coherent': False, # True to turn on g(a . sigma^+ . b^- + H.C.) terms
-            'dt': 1.0, # interval at which solution is sampled. Does not affect accuracy of solution 
+            'dt': 50.0, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'tight-binding', # dispersion to use 
             #'model': 'two-node', # tight-binding dispersion... but only counting two modes
             }
@@ -1762,6 +1773,6 @@ if __name__ == '__main__':
     #pump_strengths = [GD, 5*GD, 10*GD, 20*GD]
     #plot_input_output(tb_parameters.copy(), pump_strengths, tend=100, xlims=[-30,30]) 
     #tb_parameters['pump_strength'] = 0.2
-    #plot_dynamics_and_final_state(tb_parameters.copy()) 
-    two_mode_comparison(tb_parameters, plot_ph=True)
+    plot_dynamics_and_final_state(tb_parameters.copy()) 
+    #two_mode_comparison(tb_parameters, plot_ph=True)
 
