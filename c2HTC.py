@@ -801,6 +801,9 @@ class HTC:
         for n in range(self.Q0+1):
             numer = dft2[mid_n - n, mid_n + n]
             denom = np.sqrt(np.abs(np.real(dft2[mid_n - n, mid_n - n]) * np.real(dft2[mid_n + n, mid_n + n])))
+            #if t_index == self.num_t - 1:
+            #    with np.printoptions(precision=4):
+            #        print(n, '{:.1f}'.format(denom))
             if not np.isclose(demon, 0.0, atol=1e-8):
                 g1RR[n] = numer / denom
         # 2024-04-05 - calculate g^(1)(r,r')
@@ -1191,12 +1194,13 @@ class HTC:
         smooth_t, smooth_msd, fit = self.fit_early('ph_dic', cutoff, early_i1, early_i2)
         ax3.plot(smooth_t, smooth_msd*rn_scale,
                  label=r'\rm{{Lowpass (}}\({:.1g} \text{{\rm{{fs}}}}^{{-1}}\)\rm{{)}}'.format(cutoffFS))
-        popt = fit[1]
         if self.params['model'] != 'two-node':
             axes[0,0].plot(smooth_msd*rn_scale+self.rs[self.Q0], smooth_t, ls='--', color='lime')
         offset = max(0, early_i1-1)
         end = offset + early_i2-early_i1
-        ax3.plot(smooth_t[offset:end], fit[0][:early_i2-early_i1]*rn_scale, ls='--',
+        if fit is not None:
+            popt = fit[1]
+            ax3.plot(smooth_t[offset:end], fit[0][:early_i2-early_i1]*rn_scale, ls='--',
                  label=r'\(D,\alpha=({:.2g},{:.2g})\)'.format(popt[0]*rn_scale, popt[1])\
                          +'\n'+ r'\rm{{fit on ({},{})}}'.format(early_t1,early_t2))
         #early_t1b = 20
