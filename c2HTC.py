@@ -460,7 +460,7 @@ class HTC:
 
     def omega_hop(self, K):
         kdr = K * (2*np.pi/self.Nk)
-        return - 2 * self.params['t'] * np.cos(kdr)
+        return self.params['omega_p'] - 2 * self.params['t'] * np.cos(kdr)
 
     def omega(self, Ks):
         if self.params['model'] in ['tight-binding', 'two-node']:
@@ -1102,9 +1102,10 @@ class HTC:
         plt.close(fig)
         fig2, ax2 = plt.subplots(figsize=(4,4), constrained_layout=True)
         Sz = 2 * self.dynamics['nM'][-1]/self.params['NE'] - 1
-        Sa = self.S_steady()
         ax2.plot(self.ns, Sz, label=r'$\langle \sigma^z_n \rangle$')
-        ax2.plot(self.ns, Sa, label=r'$\Gamma_\uparrow(n)/\Gamma_\downarrow$', ls='--')
+        if np.isclose(self.params['S'], 0.0):
+            Sa = self.S_steady()
+            ax2.plot(self.ns, Sa, label=r'$\Gamma_\uparrow(n)/\Gamma_\downarrow$', ls='--')
         #ax2.plot(self.ns, Sa, label=r'\rm{analytical}')
         ax2.legend()
         fp2 = os.path.join(self.DEFAULT_DIRS['figures'], 'polarisation.png')
@@ -1129,12 +1130,15 @@ class HTC:
         else:
             early_i2 -= valid_i
         if len(plot_tP) > 10: # need reasonable number of points
-            popt, pcov = curve_fit(f, plot_tP[early_i1:early_i2],
+            try:
+                popt, pcov = curve_fit(f, plot_tP[early_i1:early_i2],
                                    to_plot[early_i1:early_i2], 
                                    bounds=([0,0],[np.inf, 2]))
-            fit_data = f(plot_tP[early_i1:], *popt)
-            fit = [fit_data, popt]
-            return plot_tP, to_plot, fit
+                fit_data = f(plot_tP[early_i1:], *popt)
+                fit = [fit_data, popt]
+                return plot_tP, to_plot, fit
+            except ValueError:
+                fit = None
         return plot_tP, to_plot, None
         logger.warning('Too few data points to generate fit')
 
@@ -1323,7 +1327,8 @@ class HTC:
         axes[0].set_xticks(ticks)
         axes[0].set_xticklabels(tick_labels)
         #axes[0].scatter(self.ks * 1e3, chosen_y, c='r', s=8, zorder=2)
-        axes[0].axhline(self.params['omega_0']-self.params['omega_p'], c='r', label=r'$\omega_0-\omega_p$')
+        axes[0].axhline(self.params['omega_0'], c='r', label=r'$\omega_0$')
+        #axes[0].axhline(self.params['omega_0']-self.params['omega_p'], c='r', label=r'$\omega_0-\omega_p$')
         if self.params['model'] == 'two-node':
             KL, KR = self.Ks[self.QL], self.Ks[self.QR]
             ws = self.omega(np.array([KL,KR]))
@@ -1387,7 +1392,8 @@ class HTC:
         mask = diff < - delta # delta for numerical tolerance
         return mask, diff 
 
-def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True, xlims=None):
+def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True, xlims=None, ylims=None,
+                      experiment_data=None):
     # 2024-04-16
     params = parameters
     num_pumps = len(pump_strengths)
@@ -1453,8 +1459,17 @@ def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True, xl
     #axes[0,2].set_yscale('log') # Log y-axis
     num_cross_sections = min(6, num_pumps)  # maximum number of cross-sections
     select_indices = np.round(np.linspace(0, num_pumps-1, num_cross_sections)).astype(int)
+    if experiment_data:
+        fig_exp, ax_exp = plt.subplots(figsize=(5,4), dpi=350, constrained_layout=True)
+        ax_exp.set_yscale('log')
+        ax_exp.set_xlim(xlims)
+        ax_exp.set_ylim(ylims)
     for i in select_indices:
         axes[0,1].plot(htc.Ks, nph_final[i, :], label=r'${}$'.format(round(ratios[i],5)))
+        if experiment_data:
+            ax_exp.plot(htc.Ks[htc.Q0:], nph_final[i, htc.Q0:]/nph_final[i, htc.Q0], label=r'${}$'.format(round(ratios[i],5)))
+    ax_exp.legend(title=r'$\Gamma_\uparrow(L/2)/\Gamma_\downarrow$')
+    fig_exp.savefig('figures/experiment_comparison.png', bbox_inches='tight')
     #axes[0,1].set_yscale('log') # Log y-axis
     axes[0,1].set_title(r'$n_{{\text{{ph}}}}(r_n)$'.format(tend))
     #axes[0,1].set_title(r'$n_{{\text{{ph}}}}(t={}, r_n)$'.format(tend))
@@ -1598,7 +1613,7 @@ def plot_dynamics_and_final_state(parameters):
     # 2024-04-05 - Dynamics and steady state
     htc = HTC(parameters)
     htc.plot_dispersion_and_pump()
-    results = htc.evolve(tend=100)
+    results = htc.evolve(tend=200)
     htc.plot_dynamics()
     htc.plot_final_state(normalise=False)
     # If want to analyse data separately use... 
@@ -1730,23 +1745,22 @@ if __name__ == '__main__':
             'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'plasmonic',
             }
-    gn = 2*np.sqrt(2)
-    NE = 200
-    g = gn/np.sqrt(NE)
+    NE = 100
+    g = 0.1
     tb_parameters = {
             'Q0': 60, # Chain of Nk = 2*Q0+1 = 51 sites
             'NE': NE, # Number of emitters per gap
             'w': 1, # Gap width, nm (Emitter spacing Delta_r = 2a+w = 81nm) [not used in dynamics calculation]
             'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm) [not used in dynamics]
-            'omega_p': 0.0, # Plasmon resonance, eV [not used in tight-binding model]
+            'omega_p': 0.05, # Plasmon resonance, eV [not used in tight-binding model]
             'omega_0': 0.0, # Dye resonance, eV [use to control detuning in tight binding model]
-            't': 0.9, # hopping parameter, eV [not used in plasmonic model]
+            't': 0.6, # hopping parameter, eV [not used in plasmonic model]
             'g': g, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
-            'kappa': 0.1, # photon loss
-            'dephase': 0.0, # Emitter pure dephasing
+            'kappa': 0.5, # photon loss
+            'dephase': 0.02, # Emitter pure dephasing
             'pump_strength': 0.1, #  Magnitude of pump strength (changed in plot_input_output below)
             #'pump_width': 324, # Pump spot width, nm (4 sites = 4 * Delta r = 4 * 81 = 324nm)
-            'pump_width': 2*229, # Pump spot width, nm, to match JB Aexp{-((n-25)/4)^2} (see def gaussian above)
+            'pump_width': 1.4*229, # Pump spot width, nm, to match JB Aexp{-((n-25)/4)^2} (see def gaussian above)
             'decay': 0.05, # Emitter non-resonant decay
             'Nnu': 1, # Number of vibrational levels for each emitter
             'S': 0.1, # Huang-Rhys parameter [Not relevant if Nnu=1]
@@ -1755,7 +1769,7 @@ if __name__ == '__main__':
             'gam_nu': 1e-04, # vibrational damping rate [N/A when Nnu=1]
             'gam_as': 0.0, # Antistokes decay
             'as_coherent': False, # True to turn on g(a . sigma^+ . b^- + H.C.) terms
-            'dt': 50.0, # interval at which solution is sampled. Does not affect accuracy of solution 
+            'dt': 100.0, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'tight-binding', # dispersion to use 
             #'model': 'two-node', # tight-binding dispersion... but only counting two modes
             }
@@ -1773,10 +1787,13 @@ if __name__ == '__main__':
     #pump_strengths = np.logspace(0, 1, num=6) # set pump strength magnitudes for input-output curve
     #pump_strengths = [100*0.05] # set pump strength magnitudes for input-output curve
     #plot_input_output(tb_parameters.copy(), pump_strengths, tend=100) # all other parameters fixed
-    #GD = tb_parameters['decay']
-    #pump_strengths = [GD, 5*GD, 10*GD, 20*GD]
-    #plot_input_output(tb_parameters.copy(), pump_strengths, tend=100, xlims=[-30,30]) 
-    #tb_parameters['pump_strength'] = 0.2
-    plot_dynamics_and_final_state(tb_parameters.copy()) 
+    GD = tb_parameters['decay']
+    #GD = 0.05
+    pump_strengths = [0.25*GD, 0.5*GD, GD, 2*GD, 3*GD]
+    plot_input_output(tb_parameters.copy(), pump_strengths, tend=150, 
+                      xlims=[0,30], ylims=[1e-4,2.5],
+                      experiment_data=True) 
+    #tb_parameters['pump_strength'] = 3*GD
+    #plot_dynamics_and_final_state(tb_parameters.copy()) 
     #two_mode_comparison(tb_parameters, plot_ph=True)
 
