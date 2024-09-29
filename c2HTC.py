@@ -470,7 +470,14 @@ class HTC:
 
     def kappa(self, K):
         K = np.atleast_1d(K)
+        #return self.params['kappa'] *(1+20*self.gaussian_k(K))
         return self.params['kappa'] * np.ones_like(K)
+
+    def gaussian_k(self, K, mu=0, sig=5):
+        if sig is None:
+            sig = self.Q0//2
+        #return np.exp(-0.5*( (K-mu) / sig )**2) 
+        return np.exp(-0.5*( (K-mu) / sig )**2) * np.cos(2*np.pi*5j*K/self.Nk)
 
     def gaussian(self, r, _max, _width, _offset=0):
         r0 = self.Q0 * self.params['delta_r'] + _offset
@@ -479,12 +486,16 @@ class HTC:
 
     def pump(self, n):
         r = self.params['delta_r'] * n
+        if self.params['pump_strength'] == 0:
+            return np.zeros_like(self.rs)
         #return self.params['pump_strength'] * np.ones_like(n)
         return self.gaussian(r, self.params['pump_strength'], self.params['pump_width'])
 
     def decay(self, n):
         n = np.atleast_1d(n)
         return self.params['decay'] * np.ones_like(n)
+        #r = self.params['delta_r'] * n
+        #return self.gaussian(r, self.params['decay'], 2*self.params['pump_width'])
 
     def dephase(self, n):
         n = np.atleast_1d(n)
@@ -994,7 +1005,7 @@ class HTC:
             self.WARN_REAL[name] = True
         if not self.WARN_REAL[name]:
             return
-        if not np.allclose(np.imag(arr), 0.0):
+        if not np.allclose(np.imag(arr), 0.0, atol=1e-6):
             t = self.t[step]
             logger.warning(f'{name} at t={t} has non-zero imaginary part (further warnings suppressed)')
             self.WARN_REAL[name] = False
@@ -1445,6 +1456,10 @@ def plot_input_output(parameters, pump_strengths, tend=100, cauchy_mask=True, xl
         gv_pops = np.real([v_pops[j,:] - ev_pops[j,:] for j in range(params['Nnu'])])
         evpops_final[i, :, :] = ev_pops
         gvpops_final[i, :, :] = gv_pops
+        #print(results['final_state'][htc.state_dic['ada']['slice']].reshape((htc.Nk,htc.Nk)))
+        #print(results['final_state'][htc.state_dic['l']['slice']][htc.Q0:htc.Q0+5])
+        #print(results['final_state'][htc.state_dic['al']['slice']][htc.Q0:htc.Q0+5])
+        #print(results['final_state'][htc.state_dic['ll']['slice']][htc.Q0:htc.Q0+5])
     htc.plot_dispersion_and_pump()
     fig, axes = plt.subplots(3, 3, figsize=(12,12), constrained_layout=True)
     nph_tots = np.sum(nph_final, axis=1) # Sum over all lattice positions 
@@ -1752,18 +1767,18 @@ if __name__ == '__main__':
             'NE': NE, # Number of emitters per gap
             'w': 1, # Gap width, nm (Emitter spacing Delta_r = 2a+w = 81nm) [not used in dynamics calculation]
             'a': 40, # Nanoparticle radius, nm (Chain length L = N_k * Delta_r = 10.0 nm) [not used in dynamics]
-            'omega_p': 0.05, # Plasmon resonance, eV [not used in tight-binding model]
-            'omega_0': 0.0, # Dye resonance, eV [use to control detuning in tight binding model]
-            't': 0.6, # hopping parameter, eV [not used in plasmonic model]
+            'omega_p': 0.05, # Plasmon resonance, eV 
+            'omega_0': 0.0, # Dye resonance, eV 
+            't': 0.2, # hopping parameter, eV [not used in plasmonic model]
             'g': g, # Individual light-matter coupling, eV, g=0.1/sqrt(NE) 
-            'kappa': 0.5, # photon loss
-            'dephase': 0.02, # Emitter pure dephasing
+            'kappa': 0.1, # photon loss
+            'dephase': 0.0, # Emitter pure dephasing
             'pump_strength': 0.1, #  Magnitude of pump strength (changed in plot_input_output below)
             #'pump_width': 324, # Pump spot width, nm (4 sites = 4 * Delta r = 4 * 81 = 324nm)
             'pump_width': 1.4*229, # Pump spot width, nm, to match JB Aexp{-((n-25)/4)^2} (see def gaussian above)
             'decay': 0.05, # Emitter non-resonant decay
             'Nnu': 1, # Number of vibrational levels for each emitter
-            'S': 0.1, # Huang-Rhys parameter [Not relevant if Nnu=1]
+            'S': 0.0, # Huang-Rhys parameter [Not relevant if Nnu=1]
             'omega_nu': 0.19, # Vibrational mode resonance, eV [N/A when Nnu=1]
             'T':0.026, # k_B T in eV for vibrational environment (.026=302K) [N/A when Nnu=1]
             'gam_nu': 1e-04, # vibrational damping rate [N/A when Nnu=1]
@@ -1787,11 +1802,13 @@ if __name__ == '__main__':
     #pump_strengths = np.logspace(0, 1, num=6) # set pump strength magnitudes for input-output curve
     #pump_strengths = [100*0.05] # set pump strength magnitudes for input-output curve
     #plot_input_output(tb_parameters.copy(), pump_strengths, tend=100) # all other parameters fixed
-    GD = tb_parameters['decay']
-    #GD = 0.05
-    pump_strengths = [0.25*GD, 0.5*GD, GD, 2*GD, 3*GD]
-    plot_input_output(tb_parameters.copy(), pump_strengths, tend=150, 
-                      xlims=[0,30], ylims=[1e-4,2.5],
+    GD = 0.05
+    #GD = tb_parameters['decay']
+    #pump_strengths = [0.5*GD, GD, 2*GD]#, 3*GD]
+    pump_strengths = [2*GD]
+    #pump_strengths = [0.06, 1.0, 2.0]
+    plot_input_output(tb_parameters.copy(), pump_strengths, tend=250,
+                      xlims=[0,30], ylims=[1e-4,2],
                       experiment_data=True) 
     #tb_parameters['pump_strength'] = 3*GD
     #plot_dynamics_and_final_state(tb_parameters.copy()) 
