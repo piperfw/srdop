@@ -62,8 +62,7 @@ class RealHTC:
         self.ns = np.arange(self.Nk)
         self.Ks = self.ns - self.Q0
         self.delta = np.eye(self.Nk)
-        #self.ee_hop = True if not np.isclose(params.tau, 0.0) else False
-        self.ee_hop = True
+        self.ee_hop = True if not np.isclose(params.tau, 0.0) else False
 
     def create_slices(self):
         Nk = self.Nk
