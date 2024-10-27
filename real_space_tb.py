@@ -29,6 +29,7 @@ class Parameters(SimpleNamespace):
                  NE=4,
                  g=0.01,
                  t=0.1,
+                 tau=0.0,
                  kappa=0.1,
                  Gam_z=0.0,
                  Gam_down=0.01,
@@ -53,6 +54,7 @@ class RealHTC:
         return
 
     def add_useful_params(self):
+        params = self.params
         params.gSqrtNE = params.g * np.sqrt(params.NE)
         params.Nk = 2 * params.Q0 + 1
         self.Q0, self.Nk, self.NE = params.Q0, params.Nk, params.NE
@@ -60,12 +62,18 @@ class RealHTC:
         self.ns = np.arange(self.Nk)
         self.Ks = self.ns - self.Q0
         self.delta = np.eye(self.Nk)
+        #self.ee_hop = True if not np.isclose(params.tau, 0.0) else False
+        self.ee_hop = True
 
     def create_slices(self):
         Nk = self.Nk
         names = ['a_dag_a', 'sig_z', 'a_sig_plus',
                  'sig_plus_sig_minus', 'sig_z_sig_z']
-        shapes = [(Nk,Nk), (Nk,), (Nk,Nk), (Nk,Nk), (Nk,)]
+        shapes = [(Nk,Nk), (Nk,), (Nk,Nk), (Nk,Nk)]
+        if self.ee_hop:
+            shapes.append((Nk, Nk))
+        else:
+            shapes.append((Nk, )) # only need diagonal elements of sigzsigz
         state_index = 0
         state_dic = {}
         split_list = []
@@ -85,7 +93,11 @@ class RealHTC:
         state = np.zeros(self.state_length, dtype=complex)
         state_dic = self.state_dic
         state[state_dic['sig_z']['slice']] = - 1.0
-        state[state_dic['sig_z_sig_z']['slice']] = 1.0
+        if self.ee_hop:
+            sigzsigz = np.eye(self.Nk)
+            state[state_dic['sig_z_sig_z']['slice']] = sigzsigz.flatten()
+        else:
+            state[state_dic['sig_z_sig_z']['slice']] = 1.0
         self.initial_state = state
 
     def gaussian(self, n, _max, _width, _offset=0):
@@ -99,9 +111,6 @@ class RealHTC:
 
     def create_pump(self):
         Nk = self.Nk
-        #self.pumps = self.gaussian(self.ns,
-        #                           self.params.pump_strength,
-        #                           self.params.pump_width)
         self.pumps = self.pump(self.ns)
         self.Gam_T = self.pumps + self.params.Gam_down
         self.Gam_n = self.Gam_T + 4 * self.params.Gam_z
@@ -110,15 +119,20 @@ class RealHTC:
 
     def omega(self, K):
         kdr = K * (2*np.pi/self.Nk)
-        return params.omega_c - 2 * params.t * np.cos(kdr)
+        return self.params.omega_c - 2 * self.params.t * np.cos(kdr)
 
     def create_coeffs(self):
+        params = self.params
         self.asp_coeff = 1j * (params.omega_0 - params.omega_c) \
                 - 0.5 * (self.Gam_n + params.kappa + params.gam_E)# omega_c centre of band
         pump_2d = np.broadcast_to(self.Gam_n, (self.Nk, self.Nk))
         #X, Y = np.meshgrid(self.Gam_n, self.Gam_n)
         #tot_pump = X + Y
-        self.spsm_coeff = - 0.5 * (pump_2d + pump_2d.T) - params.gam_E
+        self.spsm_coeff = - 0.5 * (pump_2d.T + pump_2d) - params.gam_E
+        GamT_n = np.broadcast_to(self.Gam_T, (self.Nk, self.Nk)).T
+        GamT_m = GamT_n.T
+        self.Gam_T2 = GamT_n + GamT_m # used in szsz equation with ee hopping
+
 
     def split_reshape(self, state):
         Nk = self.Nk
@@ -136,9 +150,9 @@ class RealHTC:
         return to_return
 
     def eoms(self, t, state):
-        """
-        """
+        """Real space EoMs"""
         delta_nm = self.delta
+        params = self.params
         roll_plus = lambda arr, ax: np.roll(arr, -1, axis=ax)
         roll_minus = lambda arr, ax: np.roll(arr, 1, axis=ax)
         kappa, g, t_hop, NE, gam_E, gam_ee =\
@@ -171,21 +185,111 @@ class RealHTC:
                                   - 0.5 * gam_E * (contract('n,nm->nm', sig_z, sig_plus_sig_minus) 
                                                      + contract('m,nm->nm', sig_z, sig_plus_sig_minus)) \
                                  + 1j * g * contract('m,mn->nm', sig_z,  a_sig_plus) \
-                                 - 1j * g * contract('n,nm->nm', sig_z,  np.conj(a_sig_plus))
+                                 - 1j * g * contract('n,nm->nm', sig_z,  np.conj(a_sig_plus)) \
+                                 + gam_ee * delta_nm * sig_plus_sig_minus * (1 + sig_z) # CHECK
 
         # <σ_n^z σ_m^z>
         dsig_z_sig_z = - 2 * Gam_T * sig_z_sig_z \
                           + 2 * Gam_D * sig_z \
                           + 8 * g * sig_z * np.imag(np.diag(a_sig_plus)) \
-                          - gam_ee * (1 + NE * sig_z + (2 * NE - 3) * sig_z_sig_z 
-                                      + (NE - 2) * sig_z * (3 * sig_z_sig_z - 2 * sig_z**2)
-                                      )
+                          - 2 * gam_ee * ((NE-2) * (sig_z + 2 * sig_z_sig_z +
+                                                   sig_z * (3 * sig_z_sig_z - 2 * sig_z**2)))
+                          #- gam_ee * (1 + NE * sig_z + (2 * NE - 3) * sig_z_sig_z 
+                          #            + (NE - 2) * sig_z * (3 * sig_z_sig_z - 2 * sig_z**2)
+                          #            )
     
         dy = np.concatenate((da_dag_a, [dsig_z], da_sig_plus, dsig_plus_sig_minus, [dsig_z_sig_z]), axis=None)        
         return dy
 
+    def eoms_ee_hop(self, t, state):
+        """Real space EoMs with EE hopping"""
+        delta_nm = self.delta
+        params = self.params
+        roll_plus = lambda arr, ax: np.roll(arr, -1, axis=ax)
+        roll_minus = lambda arr, ax: np.roll(arr, 1, axis=ax)
+        delta_np_nm = roll_plus(delta_nm, 1) + roll_minus(delta_nm, 1)
+        kappa, g, t_hop, tau_hop, NE, gam_E, gam_ee =\
+                params.kappa, params.g, params.t, params.tau, params.NE, params.gam_E, params.gam_ee
+        Gam_T, Gam_D, Gam_n, Gam_T2 = self.Gam_T, self.Gam_D, self.Gam_n, self.Gam_T2
+        a_dag_a, sig_z, a_sig_plus, sig_plus_sig_minus, sig_z_sig_z = \
+                self.split_reshape(state)
+
+        sig_plus_sig_minus_roll_plus_0 = roll_plus(sig_plus_sig_minus, 0)
+        sig_plus_sig_minus_roll_minus_0 = roll_minus(sig_plus_sig_minus, 0)
+        sig_plus_sig_minus_roll_plus_1 = roll_plus(sig_plus_sig_minus, 1)
+        sig_plus_sig_minus_roll_minus_1 = roll_minus(sig_plus_sig_minus, 1)
+    
+        # <a_n^† a_m> 
+        da_dag_a = - kappa * a_dag_a \
+                       + 1j * g * NE * (a_sig_plus.T - np.conj(a_sig_plus)) \
+                       - 1j * t_hop * (roll_plus(a_dag_a, 0) + roll_minus(a_dag_a, 0)
+                                       - roll_plus(a_dag_a, 1) - roll_minus(a_dag_a, 1))
+
+    
+        # <σ_n^z> 
+        dsig_z = -(Gam_n + 2 * gam_E) * sig_z \
+                      + (Gam_D - gam_E) \
+                      + 4 * g * np.imag(np.diag(a_sig_plus)) \
+                      - gam_E * np.diag(sig_z_sig_z) \
+                      - 4 * tau_hop * NE * np.imag(
+                              np.diag(sig_plus_sig_minus_roll_plus_1)
+                              +
+                              np.diag(sig_plus_sig_minus_roll_minus_1))
+    
+        # <a_m σ_n^+>  # self.asp_coeff - self.create_coeffs
+        da_sig_plus = contract('n,mn->mn', self.asp_coeff, a_sig_plus) \
+                         - 0.5 * gam_E * contract('mn,n->mn', a_sig_plus, sig_z) \
+                          + 1j * t_hop * (roll_minus(a_sig_plus, 0) + roll_plus(a_sig_plus, 0)) \
+                          - 1j * g * (contract('n,nm->mn', sig_z, a_dag_a + 0.5 * delta_nm)
+                                      + 0.5 * delta_nm + (NE - delta_nm) * np.swapaxes(sig_plus_sig_minus, 0, 1)) \
+                          + 1j * tau_hop * NE * contract('n,mn->mn', sig_z,
+                                                         (roll_plus(a_sig_plus, 1) + roll_minus(a_sig_plus, 1)))
+    
+        # <σ_n^+ σ_m^-> # self.spsm_coeff - self.create_coeffs
+        dsig_plus_sig_minus = self.spsm_coeff *  sig_plus_sig_minus \
+                                  - 0.5 * gam_E * (contract('n,nm->nm', sig_z, sig_plus_sig_minus) 
+                                                     + contract('m,nm->nm', sig_z, sig_plus_sig_minus)) \
+                                 + 1j * g * contract('m,mn->nm', sig_z,  a_sig_plus) \
+                                 - 1j * g * contract('n,nm->nm', sig_z,  np.conj(a_sig_plus)) \
+                                 + gam_ee * delta_nm * sig_plus_sig_minus * (1 + sig_z) \
+                                 + 1j * tau_hop * NE * contract(
+                                         'n,nm->nm', sig_z, sig_plus_sig_minus_roll_plus_0 
+                                                             + sig_plus_sig_minus_roll_minus_0) \
+                                 - 1j * tau_hop * NE * contract(
+                                         'm,nm->nm', sig_z, sig_plus_sig_minus_roll_plus_1 
+                                                             + sig_plus_sig_minus_roll_minus_1) \
+                                + 1j * tau_hop * NE * contract('nm,n,mm->nm', delta_np_nm,
+                                                               sig_z, 0.5 - sig_plus_sig_minus) \
+                                - 1j * tau_hop * NE * contract('nm,m,nn->nm', delta_np_nm,
+                                                               sig_z, 0.5 - sig_plus_sig_minus) 
+
+        # <σ_n^z σ_m^z>
+        a_sig_plus_im_diag = np.imag(np.diag(a_sig_plus))
+        sz_n2, sz_m2 = np.meshgrid(sig_z, sig_z, indexing='ij') # or broadcast_to...
+        sz_sum = sz_n2 + sz_m2
+        sz_diff = sz_n2 - sz_m2
+        spsm_sz_diff = contract('nm,nm->nm', sig_plus_sig_minus, sz_diff)
+        sig_z_sig_z_diag = np.diag(sig_z_sig_z) # useful below. Note in delta term could instead contract delta will full sig_z_sig_z matrix (possibly more efficient)
+                #+ 4 * g * contract('n,mm->nm', sig_z, np.imag(a_sig_plus)) \
+        dsig_z_sig_z = - contract('nm,nm->nm', Gam_T2, sig_z_sig_z) \
+                + contract('n,m->nm', Gam_D, sig_z) + contract('m,n->nm', Gam_D, sig_z) \
+                + 4 * g * contract('n,m->nm', sig_z, a_sig_plus_im_diag) \
+                + 4 * g * contract('m,n->nm', sig_z, a_sig_plus_im_diag) \
+                - gam_E * (contract('n,mm->nm', sig_z, sig_z_sig_z) + contract('m,nn->nm', sig_z, sig_z_sig_z) 
+                           + 4 * sig_z_sig_z + sz_sum + 2 * contract('nm,nm->nm', sz_sum, sig_z_sig_z)
+                           - 2 * contract('nm,n,m->nm', sz_sum, sig_z, sig_z)) \
+                + 2 * gam_ee * delta_nm * (2 * sig_z_sig_z_diag + sig_z * (1 + 3 * sig_z_sig_z_diag - 2 * sig_z**2)) \
+                - 4 * tau_hop * NE * np.imag(
+                        contract('n,mm->nm', sig_z, sig_plus_sig_minus_roll_minus_1 - sig_plus_sig_minus_roll_plus_0)
+                        + contract('m,nn->nm', sig_z, sig_plus_sig_minus_roll_minus_1 - sig_plus_sig_minus_roll_plus_0) ) \
+                + 4 * tau_hop * contract('nm,nm->nm', delta_np_nm, np.imag(spsm_sz_diff))
+
+        dy = np.concatenate((da_dag_a, [dsig_z], da_sig_plus, dsig_plus_sig_minus, dsig_z_sig_z), axis=None)        
+        return dy
+
     def evolve(self, tend=250.0, atol=1e-8, rtol=1e-6):
         """Integrate second-order cumulants equations of motion from t=0 to  t=tend (femptoseconds)"""
+        params = self.params
         dt_fs = params.dt
         self.t_fs = np.arange(0.0, tend+dt_fs/2, step=dt_fs)
         self.t = self.t_fs / self.EV_TO_FS
@@ -200,9 +304,10 @@ class RealHTC:
         next_check_i = 1
         last_solver_i = 0
         solver_t = [] # keep track of solver times too (not fixed grid)
-        logger.info(f'Evolving real space eqs. to tend={tend} fs at pump_strength={params.pump_strength:.2f}')
+        eoms = self.eoms_ee_hop if self.ee_hop else self.eoms
+        logger.info(f'Evolving {eoms.__doc__} to tend={tend} fs at pump_strength={params.pump_strength:.2f}')
         tic = time() # time the computation
-        solver = SOLVER(self.eoms,
+        solver = SOLVER(eoms,
                         t0=0.0,
                         y0=self.initial_state,
                         t_bound=self.t[-1],
@@ -492,11 +597,13 @@ if __name__ == '__main__':
                         Q0=30, # 2*Q0+1 sites (so Q0 to the right of 0)
                         NE=100, # Number of emitters per gap
                         g=0.01, # INDIVIDUAL light-matter coupling (collective gSqrtNE)
-                        t=0.4, # Hopping parameter
+                        t=0.4, # Hopping parameter (photon)
+                        tau=0.0, # Hopping parameter (exciton)
+                        #tau=1e-3, # NOT WORKING (!?)
                         kappa=0.1, # photon loss
                         Gam_z=0.0, # emitter pure dephasing
                         Gam_down=1e-4, # emitter decay
-                        gam_ee=1e-2, # emitter EEA rate
+                        gam_ee=1e-4, # emitter EEA rate
                         pump_strength=0.1, # emitter pump strength (maximum of Gaussian), overwritten in plot_input_output below
                         pump_width=4, # Pump width (Gaussian s.d.) in number of SITES
                         )
@@ -504,7 +611,8 @@ if __name__ == '__main__':
     #min_dec, max_dec = 0, 2
     #ratios = np.logspace(min_dec, max_dec, num=max_dec-min_dec+1)
     #pump_strengths = ratios * params.Gam_down
-    pump_strengths = params.Gam_down * np.logspace(0, 1.5, num=5)
+    #pump_strengths = params.Gam_down * np.logspace(0.5, 1.6, num=5) # gam_ee = 0.0
+    pump_strengths = params.Gam_down * np.logspace(1, 3, num=5) # gam_ee = 1e-4
     plot_input_output(params, pump_strengths,
                       normalise=True, # optional, normalise photon population by the population at R=0
                       max_nph_curves=5, # optional, only plot this many curves (if pump_strengths contains more)
