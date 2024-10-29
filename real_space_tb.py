@@ -257,9 +257,9 @@ class RealHTC:
                                  - 1j * tau_hop * NE * contract(
                                          'm,nm->nm', sig_z, sig_plus_sig_minus_roll_plus_1 
                                                              + sig_plus_sig_minus_roll_minus_1) \
-                                + 1j * tau_hop * NE * contract('nm,n,mm->nm', delta_np_nm,
+                                + 1j * tau_hop * contract('nm,n,mm->nm', delta_np_nm,
                                                                sig_z, 0.5 - sig_plus_sig_minus) \
-                                - 1j * tau_hop * NE * contract('nm,m,nn->nm', delta_np_nm,
+                                - 1j * tau_hop * contract('nm,m,nn->nm', delta_np_nm,
                                                                sig_z, 0.5 - sig_plus_sig_minus) 
 
         # <σ_n^z σ_m^z>
@@ -597,8 +597,8 @@ if __name__ == '__main__':
                         NE=100, # Number of emitters per gap
                         g=0.01, # INDIVIDUAL light-matter coupling (collective gSqrtNE)
                         t=0.4, # Hopping parameter (photon)
-                        tau=0.0, # Hopping parameter (exciton)
-                        #tau=1e-3, # NOT WORKING (!?)
+                        #tau=0.0, # Hopping parameter (exciton)
+                        tau=1e-4, # TESTING
                         kappa=0.1, # photon loss
                         Gam_z=0.0, # emitter pure dephasing
                         Gam_down=1e-4, # emitter decay
