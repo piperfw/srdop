@@ -401,6 +401,12 @@ class RealHTC:
         nM = self.NE * 0.5 * (sig_z + 1)
         self.check_real(nM, t_index, 'electronic population')
         self.dynamics['nM'][t_index] = np.real(nM)
+        if np.allclose(nPh, 0.0):
+            g1 = np.zeros(self.Nk, dtype=complex)
+        else:
+            g1 = a_dag_a[:,self.Q0]/np.sqrt(nPh * a_dag_a[self.Q0,self.Q0])
+        self.dynamics['g1'][t_index] = g1
+
 
     def calculate_photonic(self, t_index, ada):
         nk = fftshift(np.diag(ada))
@@ -511,9 +517,10 @@ def plot_input_output(params, pump_strngths, tend=250,
     nK_final = np.zeros((num_pumps, Nk), dtype=float)
     nM_final = np.zeros((num_pumps, Nk), dtype=float)
     nK_final = np.zeros((num_pumps, Nk), dtype=float)
+    g1_final = np.zeros((num_pumps, Nk), dtype=complex)
     adaga_final = np.zeros((num_pumps, Nk, Nk), dtype=complex) 
     adaga_final_mask = np.zeros((num_pumps, Nk, Nk), dtype=bool) 
-    fig, axes = plt.subplots(2, 2, figsize=(8,6), constrained_layout=True, sharex='col')
+    fig, axes = plt.subplots(3, 2, figsize=(8,10), constrained_layout=True, sharex='col')
     figk, axesk = plt.subplots(1,2, figsize=(8,3), constrained_layout=True)
     select_indices = np.round(np.linspace(0, num_pumps-1, max_nph_curves)).astype(int)
     pump_title = r'$\Gamma_\uparrow(0)/\Gamma_\downarrow$'
@@ -529,6 +536,7 @@ def plot_input_output(params, pump_strngths, tend=250,
         nph_final[i, :] = results['dynamics']['nP'][-1, :]
         nK_final[i, :] = results['dynamics']['nK'][-1, :] # already fftshifted to ascending order
         nM_final[i, :] = results['dynamics']['nM'][-1, :]
+        g1_final[i, :] = results['dynamics']['g1'][-1, :]
         if i not in select_indices:
             continue
         if normalise:
@@ -540,6 +548,10 @@ def plot_input_output(params, pump_strngths, tend=250,
         pump_str = r'${:.2g}$'.format(round(ratios[i],5))
         axes[0,1].plot(y1[htc.Q0:], label=pump_str)
         axes[1,1].plot(y2[htc.Q0:], label=pump_str)
+        from scipy.signal import argrelmax
+        print(argrelmax(np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
+        print(argrelmax(-np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
+        axes[2,1].plot(np.abs(g1_final[i,htc.Q0:]), label=pump_str)
         axesk[0].plot(htc.Ks, y3, label=pump_str)
         if i == num_pumps - 1:
             Nk = htc.Nk
@@ -560,10 +572,11 @@ def plot_input_output(params, pump_strngths, tend=250,
     if xlims is not None:
         axes[0,1].set_xlim(xlims)
         axes[1,1].set_xlim(xlims)
+        axes[2,1].set_xlim(xlims)
     nph_tots = np.sum(nph_final, axis=1) # Sum over all lattice positions 
     nM_tots = np.sum(nM_final, axis=1) # sum over all lattice positions
-    axes[1,0].set_xlabel(pump_title)
-    axes[1,1].set_xlabel(r'$n$')
+    axes[2,0].set_xlabel(pump_title)
+    axes[2,1].set_xlabel(r'$n$')
     axesk[0].set_xlabel(r'$K$')
     axesk[1].set_xlabel(r'$K$')
     axesk[1].set_ylabel(r'$K$')
@@ -574,8 +587,12 @@ def plot_input_output(params, pump_strngths, tend=250,
     axes[0,0].set_title(r'$\sum_n n_{nn}$')
     axes[1,0].set_title(r'$ \sum_n\left(N_Ep^\uparrow_n\right)$')
     axes[1,1].set_title(r'$p^\uparrow_n$')
+    axes[2,1].set_title(r'$|g^{(1)}(R)|$')
+    axes[2,0].set_title(r'$|g^{(1)}(0)|$')
     axes[0,0].loglog(ratios, nph_tots)
     axes[1,0].loglog(ratios, nM_tots)
+    axes[2,0].plot(ratios, np.abs(g1_final[:,htc.Q0]))
+    axes[2,0].set_xscale('log')
     axes[1,1].legend(title=pump_title)
     axes[0,1].legend(title=pump_title)
     axesk[0].legend(title=pump_title)
