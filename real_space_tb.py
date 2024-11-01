@@ -548,9 +548,9 @@ def plot_input_output(params, pump_strngths, tend=250,
         pump_str = r'${:.2g}$'.format(round(ratios[i],5))
         axes[0,1].plot(y1[htc.Q0:], label=pump_str)
         axes[1,1].plot(y2[htc.Q0:], label=pump_str)
-        from scipy.signal import argrelmax
-        print(argrelmax(np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
-        print(argrelmax(-np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
+        #from scipy.signal import argrelmax
+        #print(argrelmax(np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
+        #print(argrelmax(-np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
         axes[2,1].plot(np.abs(g1_final[i,htc.Q0:]), label=pump_str)
         axesk[0].plot(htc.Ks, y3, label=pump_str)
         if i == num_pumps - 1:
