@@ -375,7 +375,7 @@ class RealHTC:
                          'nM': nMs,
                          'g1': g1s,
                          'g1RR': g1RRs,
-                         'V': Vs, 
+                         'V': None, 
                          }
 
     def record_dynamics(self, t_index, y):
@@ -401,12 +401,17 @@ class RealHTC:
         nM = self.NE * 0.5 * (sig_z + 1)
         self.check_real(nM, t_index, 'electronic population')
         self.dynamics['nM'][t_index] = np.real(nM)
+        gRR = np.zeros(self.Q0+1, dtype=complex)
         if np.allclose(nPh, 0.0):
             g1 = np.zeros(self.Nk, dtype=complex)
         else:
             g1 = a_dag_a[:,self.Q0]/np.sqrt(nPh * a_dag_a[self.Q0,self.Q0])
+            for n in range(self.Q0+1):
+                numer = a_dag_a[self.Q0+n,self.Q0-n]
+                denom = np.sqrt(nPh[self.Q0+n] * nPh[self.Q0-n])
+                gRR[n] = numer / denom
         self.dynamics['g1'][t_index] = g1
-
+        self.dynamics['g1RR'][t_index] = gRR
 
     def calculate_photonic(self, t_index, ada):
         nk = fftshift(np.diag(ada))
@@ -518,9 +523,10 @@ def plot_input_output(params, pump_strngths, tend=250,
     nM_final = np.zeros((num_pumps, Nk), dtype=float)
     nK_final = np.zeros((num_pumps, Nk), dtype=float)
     g1_final = np.zeros((num_pumps, Nk), dtype=complex)
+    g1RR_final = np.zeros((num_pumps, params.Q0+1), dtype=complex)
     adaga_final = np.zeros((num_pumps, Nk, Nk), dtype=complex) 
     adaga_final_mask = np.zeros((num_pumps, Nk, Nk), dtype=bool) 
-    fig, axes = plt.subplots(3, 2, figsize=(8,10), constrained_layout=True, sharex='col')
+    fig, axes = plt.subplots(3, 2, figsize=(8,10), constrained_layout=True, sharex=False)# sharex='col')
     figk, axesk = plt.subplots(1,2, figsize=(8,3), constrained_layout=True)
     select_indices = np.round(np.linspace(0, num_pumps-1, max_nph_curves)).astype(int)
     pump_title = r'$\Gamma_\uparrow(0)/\Gamma_\downarrow$'
@@ -537,6 +543,7 @@ def plot_input_output(params, pump_strngths, tend=250,
         nK_final[i, :] = results['dynamics']['nK'][-1, :] # already fftshifted to ascending order
         nM_final[i, :] = results['dynamics']['nM'][-1, :]
         g1_final[i, :] = results['dynamics']['g1'][-1, :]
+        g1RR_final[i, :] = results['dynamics']['g1RR'][-1, :]
         if i not in select_indices:
             continue
         if normalise:
@@ -552,6 +559,7 @@ def plot_input_output(params, pump_strngths, tend=250,
         #print(argrelmax(np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
         #print(argrelmax(-np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
         axes[2,1].plot(np.abs(g1_final[i,htc.Q0:]), label=pump_str)
+        axes[2,0].plot(np.abs(g1RR_final[i,:]), label=pump_str)
         axesk[0].plot(htc.Ks, y3, label=pump_str)
         if i == num_pumps - 1:
             Nk = htc.Nk
@@ -573,9 +581,11 @@ def plot_input_output(params, pump_strngths, tend=250,
         axes[0,1].set_xlim(xlims)
         axes[1,1].set_xlim(xlims)
         axes[2,1].set_xlim(xlims)
+        axes[2,0].set_xlim(xlims)
     nph_tots = np.sum(nph_final, axis=1) # Sum over all lattice positions 
     nM_tots = np.sum(nM_final, axis=1) # sum over all lattice positions
-    axes[2,0].set_xlabel(pump_title)
+    axes[1,0].set_xlabel(pump_title)
+    axes[2,0].set_xlabel(r'$n$')
     axes[2,1].set_xlabel(r'$n$')
     axesk[0].set_xlabel(r'$K$')
     axesk[1].set_xlabel(r'$K$')
@@ -588,11 +598,12 @@ def plot_input_output(params, pump_strngths, tend=250,
     axes[1,0].set_title(r'$ \sum_n\left(N_Ep^\uparrow_n\right)$')
     axes[1,1].set_title(r'$p^\uparrow_n$')
     axes[2,1].set_title(r'$|g^{(1)}(R)|$')
-    axes[2,0].set_title(r'$|g^{(1)}(0)|$')
+    axes[2,1].set_title(r'$|g^{(1)}(R)|$')
+    axes[2,0].set_title(r'$|g^{(1)}(R,-R)|$')
     axes[0,0].loglog(ratios, nph_tots)
     axes[1,0].loglog(ratios, nM_tots)
-    axes[2,0].plot(ratios, np.abs(g1_final[:,htc.Q0]))
-    axes[2,0].set_xscale('log')
+    #axes[2,0].plot(ratios, np.abs(g1_final[:,htc.Q0]))
+    #axes[2,0].set_xscale('log')
     axes[1,1].legend(title=pump_title)
     axes[0,1].legend(title=pump_title)
     axesk[0].legend(title=pump_title)
