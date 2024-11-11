@@ -57,6 +57,7 @@ class RealHTC:
         params = self.params
         params.gSqrtNE = params.g * np.sqrt(params.NE)
         params.Nk = 2 * params.Q0 + 1
+        params.Nm = params.Nk * params.NE
         self.Q0, self.Nk, self.NE = params.Q0, params.Nk, params.NE
         params.gam_E = ( params.NE - 1 ) * params.gam_ee
         self.ns = np.arange(self.Nk)
@@ -367,15 +368,21 @@ class RealHTC:
         nKs = np.zeros((Nt, self.Nk), dtype=float)
         nMs = np.zeros((Nt, self.Nk), dtype=float)
         g1s = np.zeros((Nt, self.Nk), dtype=complex)
+        d1s = np.zeros((Nt, self.Nk), dtype=complex)
         g1RRs = np.zeros((Nt, self.Q0+1), dtype=complex)
         Vs = np.zeros((Nt, self.Q0+1), dtype=float)
+        ZQns = np.zeros((Nt, self.Nk), dtype=float)
+        ZQs = np.zeros(Nt, dtype=float)
         self.dynamics = {'t': self.t_fs,
                          'nP': nPs,
                          'nK': nKs,
                          'nM': nMs,
                          'g1': g1s,
+                         'd1': d1s,
                          'g1RR': g1RRs,
                          'V': None, 
+                         'ZQn': ZQns,
+                         'ZQ': ZQs,
                          }
 
     def record_dynamics(self, t_index, y):
@@ -410,46 +417,33 @@ class RealHTC:
                 numer = a_dag_a[self.Q0+n,self.Q0-n]
                 denom = np.sqrt(nPh[self.Q0+n] * nPh[self.Q0-n])
                 gRR[n] = numer / denom
+        if np.allclose(sig_z, -1.0, atol=1e-5):
+            d1 = np.zeros(self.Nk, dtype=complex)
+        else:
+            #d1 = sig_plus_sig_minus[:, self.Q0] 
+            d1 = 2 * sig_plus_sig_minus[:, self.Q0] / np.sqrt((1+sig_z)*(1+sig_z[self.Q0]))
+            #d1[self.Q0] = 1.0
         self.dynamics['g1'][t_index] = g1
         self.dynamics['g1RR'][t_index] = gRR
+        self.dynamics['d1'][t_index] = d1
+        self.dynamics['ZQn'][t_index], self.dynamics['ZQ'][t_index] = self.ZQs(state)
 
-    def calculate_photonic(self, t_index, ada):
-        nk = fftshift(np.diag(ada))
-        self.check_real(t_index, nk, 'Photon number (k-space)')
-        alpha = ifft(ada, axis=0) # including 1/N_k normalisation!
-        dft2 = fft(alpha, axis=-1) # real space so no fftshift... (start with position 0...)
-        nph = np.diag(dft2) # n(r_n) when n=m
-        self.check_real(t_index, nph, 'Photon density')
-        mid_n = self.Q0
-        g1 = np.zeros(self.Nk, dtype=complex)
-        for n in self.ns:
-            numer = dft2[n, mid_n]
-            demon = np.sqrt(np.abs(np.real(dft2[n,n]) * np.real(dft2[mid_n, mid_n])))
-            if np.isclose(demon, 0.0, atol=1e-8):
-                g1[n] = np.zeros_like(numer)
-            else:
-                g1[n] = numer/demon
-        # 2024-08-16 Calculate g^(1)(R,-R) for R=0,1,...,Q0 (R=0 meaning the centre)
-        g1RR = np.zeros(self.Q0+1, dtype=complex)
-        for n in range(self.Q0+1):
-            numer = dft2[mid_n - n, mid_n + n]
-            denom = np.sqrt(np.abs(np.real(dft2[mid_n - n, mid_n - n]) * np.real(dft2[mid_n + n, mid_n + n])))
-            if not np.isclose(demon, 0.0, atol=1e-8):
-                g1RR[n] = numer / denom
-        # Visibility
-        V = np.zeros(self.Q0+1, dtype=float)
-        for n in range(self.Q0+1):
-            numerV = 2 * np.abs(dft2[self.Q0+n, self.Q0-n])
-            denomV = np.real(dft2[self.Q0+n,self.Q0+n]) +  np.real(dft2[self.Q0-n,self.Q0-n]) 
-            if np.isclose(denomV, 0.0, atol=1e-8):
-                V[n] = 0.0
-            else:
-                V[n] = numerV/denomV
-        self.dynamics['nP'][t_index] = np.real(nph)
-        self.dynamics['nK'][t_index] = np.real(nk)
-        self.dynamics['g1'][t_index] = g1
-        self.dynamics['g1RR'][t_index] = g1RR
-        self.dynamics['V'][t_index] = V
+    def ZQs(self, state):
+        name = 'sig_plus_sig_minus'
+        spsm = state[self.state_dic[name]['slice']].reshape(self.state_dic[name]['shape'])
+        ZQn = np.diag(spsm)
+        #ZQ2 = 2 * (1/self.Nk)*(1/(self.Nk-1)) * np.sum(np.triu(spsm, k=1))
+        #ZQ2 = (1/self.Nk)*(1/(self.Nk-1)) * (np.sum(np.triu(spsm, k=1))+np.sum(np.tril(spsm,k=-1)))
+        #ZQ2 = (1/self.Nk**2) * (np.sum(np.triu(spsm, k=1))+np.sum(np.tril(spsm,k=-1))+np.sum(ZQn))
+        spsm_copy = np.copy(spsm)
+        spsm_copy[np.diag_indices(self.Nk)] = 0.0
+        ZQ2 = self.NE**2 * np.sum(spsm_copy) + self.NE*(self.NE-1)*np.sum(ZQn)
+        ZQ2 /= self.params.Nm*(self.params.Nm-1)
+        self.check_real(0, ZQn, 'ZQn')
+        ZQn = np.real(ZQn)
+        self.check_real(0, ZQ2, 'ZQ2')
+        ZQ2 = np.real(ZQ2)
+        return ZQn, ZQ2    
 
     WARN_REAL = {}
     def check_real(self, step, arr, name):
@@ -523,11 +517,17 @@ def plot_input_output(params, pump_strngths, tend=250,
     nM_final = np.zeros((num_pumps, Nk), dtype=float)
     nK_final = np.zeros((num_pumps, Nk), dtype=float)
     g1_final = np.zeros((num_pumps, Nk), dtype=complex)
+    d1_final = np.zeros((num_pumps, Nk), dtype=complex)
+    ZQn_final = np.zeros((num_pumps, Nk), dtype=complex)
+    ZQ2_final = np.zeros(num_pumps, dtype=complex)
     g1RR_final = np.zeros((num_pumps, params.Q0+1), dtype=complex)
     adaga_final = np.zeros((num_pumps, Nk, Nk), dtype=complex) 
     adaga_final_mask = np.zeros((num_pumps, Nk, Nk), dtype=bool) 
     fig, axes = plt.subplots(3, 2, figsize=(8,10), constrained_layout=True, sharex=False)# sharex='col')
     figk, axesk = plt.subplots(1,2, figsize=(8,3), constrained_layout=True)
+    figS, axesS = plt.subplots(2,2, figsize=(8,8), constrained_layout=True, sharex='col')
+    figIM, axesIM = plt.subplots(max_nph_curves, 3, figsize=(max_nph_curves*3,10), sharex=True, sharey=True,
+                                 constrained_layout=True)
     select_indices = np.round(np.linspace(0, num_pumps-1, max_nph_curves)).astype(int)
     pump_title = r'$\Gamma_\uparrow(0)/\Gamma_\downarrow$'
     for i, pump in enumerate(pump_strengths):
@@ -544,6 +544,9 @@ def plot_input_output(params, pump_strngths, tend=250,
         nM_final[i, :] = results['dynamics']['nM'][-1, :]
         g1_final[i, :] = results['dynamics']['g1'][-1, :]
         g1RR_final[i, :] = results['dynamics']['g1RR'][-1, :]
+        d1_final[i] = results['dynamics']['d1'][-1]
+        ZQn_final[i] = results['dynamics']['ZQn'][-1]
+        ZQ2_final[i] = results['dynamics']['ZQ'][-1]
         if i not in select_indices:
             continue
         if normalise:
@@ -559,8 +562,25 @@ def plot_input_output(params, pump_strngths, tend=250,
         #print(argrelmax(np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
         #print(argrelmax(-np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
         axes[2,1].plot(np.abs(g1_final[i,htc.Q0:]), label=pump_str)
+        axesS[0,1].plot(np.abs(d1_final[i,htc.Q0:]), label=pump_str)
+        axesS[1,1].plot(np.abs(ZQn_final[i,htc.Q0:]), label=pump_str)
         axes[2,0].plot(np.abs(g1RR_final[i,:]), label=pump_str)
         axesk[0].plot(htc.Ks, y3, label=pump_str)
+        extent = [htc.Ks[0], htc.Ks[-1],htc.Ks[0], htc.Ks[-1]]
+        cm = colormaps['viridis'] 
+        if i in select_indices:
+            j = np.argwhere(select_indices==i)[0][0]
+            a_dag_a, sig_z, a_sig_plus, sig_plus_sig_minus, sig_z_sig_z = \
+                    htc.split_reshape(results['final_state'])
+            im1 = axesIM[j,0].imshow(np.real(a_dag_a), origin='lower', aspect='auto', interpolation='none',
+                                     extent=extent, cmap=cm, label=pump_str)
+            cbar1 = figIM.colorbar(im1, ax=axesIM[j,0], aspect=20)
+            im2 = axesIM[j,1].imshow(np.real(a_sig_plus), origin='lower', aspect='auto', interpolation='none',
+                                     extent=extent, cmap=cm, label=pump_str)
+            cbar2 = figIM.colorbar(im2, ax=axesIM[j,1], aspect=20)
+            im3 = axesIM[j,2].imshow(np.real(sig_plus_sig_minus), origin='lower', aspect='auto', interpolation='none',
+                                     extent=extent, cmap=cm, label=pump_str)
+            cbar3 = figIM.colorbar(im3, ax=axesIM[j,2], aspect=20)
         if i == num_pumps - 1:
             Nk = htc.Nk
             final_ada = results['final_state'][htc.state_dic['a_dag_a']['slice']].reshape((Nk, Nk))
@@ -568,16 +588,16 @@ def plot_input_output(params, pump_strngths, tend=250,
             mask, diff = htc.cauchy_mask(nkp)
             adaga_one = np.ma.masked_array(np.copy(nkp),
                                            mask=mask)
-            cm = colormaps['viridis'] 
             cm.set_bad('red')
-            extent = [htc.Ks[0], htc.Ks[-1],htc.Ks[0], htc.Ks[-1]]
             im = axesk[1].imshow(np.real(adaga_one), origin='lower', aspect='auto',
                             interpolation='none', extent=extent, cmap=cm,
-                            label=r'${:.2g}$'.format(round(ratios[i],5)))
+                            label=pump_str)
             cbar = figk.colorbar(im, ax=axesk[1], aspect=20)
             axesk[1].set_title(r'$\rm{Re}\,n_{kp}\quad($' + pump_title + r'$=$'+pump_str+r'$)$')
     htc.plot_dispersion_pump()
     if xlims is not None:
+        #axesS[0,1].set_xlim(xlims)
+        #axesS[1,1].set_xlim(xlims)
         axes[0,1].set_xlim(xlims)
         axes[1,1].set_xlim(xlims)
         axes[2,1].set_xlim(xlims)
@@ -585,6 +605,15 @@ def plot_input_output(params, pump_strngths, tend=250,
     nph_tots = np.sum(nph_final, axis=1) # Sum over all lattice positions 
     nM_tots = np.sum(nM_final, axis=1) # sum over all lattice positions
     axes[1,0].set_xlabel(pump_title)
+    axesS[1,0].set_xlabel(pump_title)
+    axesS[1,1].set_xlabel(r'$n$')
+    axesS[0,0].set_title(r'$|Z^Q|$ (different site)')
+    axesS[1,0].set_title(r'$|Z^Q|$ (single site)')
+    axesS[0,1].set_title(r'$|d^{(1)}(R)|$')
+    axesS[1,1].set_title(r'$|Z^Q_n|$ (single site)')
+    axesIM[0,0].set_title(r'$\text{Re} n_{nm}$')
+    axesIM[0,1].set_title(r'$\text{Re} P_{nm}$')
+    axesIM[0,2].set_title(r'$\text{Re} D_{nm}$')
     axes[2,0].set_xlabel(r'$n$')
     axes[2,1].set_xlabel(r'$n$')
     axesk[0].set_xlabel(r'$K$')
@@ -598,20 +627,27 @@ def plot_input_output(params, pump_strngths, tend=250,
     axes[1,0].set_title(r'$ \sum_n\left(N_Ep^\uparrow_n\right)$')
     axes[1,1].set_title(r'$p^\uparrow_n$')
     axes[2,1].set_title(r'$|g^{(1)}(R)|$')
-    axes[2,1].set_title(r'$|g^{(1)}(R)|$')
     axes[2,0].set_title(r'$|g^{(1)}(R,-R)|$')
     axes[0,0].loglog(ratios, nph_tots)
     axes[1,0].loglog(ratios, nM_tots)
+    axesS[0,0].loglog(ratios, np.abs(ZQ2_final))
+    axesS[1,0].loglog(ratios, np.abs(np.sum(ZQn_final,axis=1)))
     #axes[2,0].plot(ratios, np.abs(g1_final[:,htc.Q0]))
     #axes[2,0].set_xscale('log')
+    axesS[1,1].legend(title=pump_title)
+    axesS[0,1].legend(title=pump_title)
     axes[1,1].legend(title=pump_title)
     axes[0,1].legend(title=pump_title)
     axesk[0].legend(title=pump_title)
     fig.suptitle(r'$N_k={Nk}\ N_E={NE}\ g={g}\ \kappa={kappa}\ \Gamma^\downarrow={Gam_down:.2g}\  t={t}\ \gamma^{{\rm{{ee}}}}={gam_ee}$'.format(**params.__dict__))
     fig.savefig('figures/real_space_input_output.png', bbox_inches='tight', dpi=350)
     figk.savefig('figures/real_space_cauchy.png', bbox_inches='tight', dpi=350)
+    figS.savefig('figures/real_space_spin_coherence.png', bbox_inches='tight', dpi=350)
+    figIM.savefig('figures/real_space_images.png', bbox_inches='tight', dpi=450)
     plt.close(fig)
     plt.close(figk)
+    plt.close(figS)
+    plt.close(figIM)
 
 if __name__ == '__main__':
     logging.basicConfig(
@@ -639,7 +675,7 @@ if __name__ == '__main__':
     #ratios = np.logspace(min_dec, max_dec, num=max_dec-min_dec+1)
     #pump_strengths = ratios * params.Gam_down
     #pump_strengths = params.Gam_down * np.logspace(0.5, 1.6, num=5) # gam_ee = 0.0
-    pump_strengths = params.Gam_down * np.logspace(1, 3, num=5) # gam_ee = 1e-4
+    pump_strengths = params.Gam_down * np.logspace(1, 3, num=20) # gam_ee = 1e-4
     plot_input_output(params, pump_strengths,
                       normalise=True, # optional, normalise photon population by the population at R=0
                       max_nph_curves=5, # optional, only plot this many curves (if pump_strengths contains more)
