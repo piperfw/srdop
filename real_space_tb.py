@@ -572,13 +572,13 @@ def plot_input_output(params, pump_strngths, tend=250,
             j = np.argwhere(select_indices==i)[0][0]
             a_dag_a, sig_z, a_sig_plus, sig_plus_sig_minus, sig_z_sig_z = \
                     htc.split_reshape(results['final_state'])
-            im1 = axesIM[j,0].imshow(np.real(a_dag_a), origin='lower', aspect='auto', interpolation='none',
+            im1 = axesIM[j,0].imshow(np.abs(a_dag_a), origin='lower', aspect='auto', interpolation='none',
                                      extent=extent, cmap=cm, label=pump_str)
             cbar1 = figIM.colorbar(im1, ax=axesIM[j,0], aspect=20)
-            im2 = axesIM[j,1].imshow(np.real(a_sig_plus), origin='lower', aspect='auto', interpolation='none',
+            im2 = axesIM[j,1].imshow(np.abs(a_sig_plus), origin='lower', aspect='auto', interpolation='none',
                                      extent=extent, cmap=cm, label=pump_str)
             cbar2 = figIM.colorbar(im2, ax=axesIM[j,1], aspect=20)
-            im3 = axesIM[j,2].imshow(np.real(sig_plus_sig_minus), origin='lower', aspect='auto', interpolation='none',
+            im3 = axesIM[j,2].imshow(np.abs(sig_plus_sig_minus), origin='lower', aspect='auto', interpolation='none',
                                      extent=extent, cmap=cm, label=pump_str)
             cbar3 = figIM.colorbar(im3, ax=axesIM[j,2], aspect=20)
             axesIM[j,0].set_ylabel(pump_title + r'$=$'+pump_str)
@@ -612,9 +612,9 @@ def plot_input_output(params, pump_strngths, tend=250,
     axesS[1,0].set_title(r'$|Z^Q|$ (single site)')
     axesS[0,1].set_title(r'$|d^{(1)}(R)|$')
     axesS[1,1].set_title(r'$|Z^Q_n|$ (single site)')
-    axesIM[0,0].set_title(r'$\text{Re} n_{nm}$')
-    axesIM[0,1].set_title(r'$\text{Re} P_{nm}$')
-    axesIM[0,2].set_title(r'$\text{Re} D_{nm}$')
+    axesIM[0,0].set_title(r'$|n_{nm}|$')
+    axesIM[0,1].set_title(r'$|P_{nm}|$')
+    axesIM[0,2].set_title(r'$|D_{nm}|$')
     axes[2,0].set_xlabel(r'$n$')
     axes[2,1].set_xlabel(r'$n$')
     axesk[0].set_xlabel(r'$K$')
@@ -676,7 +676,7 @@ if __name__ == '__main__':
     #ratios = np.logspace(min_dec, max_dec, num=max_dec-min_dec+1)
     #pump_strengths = ratios * params.Gam_down
     #pump_strengths = params.Gam_down * np.logspace(0.5, 1.6, num=5) # gam_ee = 0.0
-    pump_strengths = params.Gam_down * np.logspace(1, 3, num=5) # gam_ee = 1e-4
+    pump_strengths = params.Gam_down * np.logspace(1, 3, num=20) # gam_ee = 1e-4
     plot_input_output(params, pump_strengths,
                       normalise=True, # optional, normalise photon population by the population at R=0
                       max_nph_curves=5, # optional, only plot this many curves (if pump_strengths contains more)
