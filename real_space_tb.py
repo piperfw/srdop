@@ -581,6 +581,7 @@ def plot_input_output(params, pump_strngths, tend=250,
             im3 = axesIM[j,2].imshow(np.real(sig_plus_sig_minus), origin='lower', aspect='auto', interpolation='none',
                                      extent=extent, cmap=cm, label=pump_str)
             cbar3 = figIM.colorbar(im3, ax=axesIM[j,2], aspect=20)
+            axesIM[j,0].set_ylabel(pump_title + r'$=$'+pump_str)
         if i == num_pumps - 1:
             Nk = htc.Nk
             final_ada = results['final_state'][htc.state_dic['a_dag_a']['slice']].reshape((Nk, Nk))
@@ -675,7 +676,7 @@ if __name__ == '__main__':
     #ratios = np.logspace(min_dec, max_dec, num=max_dec-min_dec+1)
     #pump_strengths = ratios * params.Gam_down
     #pump_strengths = params.Gam_down * np.logspace(0.5, 1.6, num=5) # gam_ee = 0.0
-    pump_strengths = params.Gam_down * np.logspace(1, 3, num=20) # gam_ee = 1e-4
+    pump_strengths = params.Gam_down * np.logspace(1, 3, num=5) # gam_ee = 1e-4
     plot_input_output(params, pump_strengths,
                       normalise=True, # optional, normalise photon population by the population at R=0
                       max_nph_curves=5, # optional, only plot this many curves (if pump_strengths contains more)
