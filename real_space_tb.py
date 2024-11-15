@@ -13,6 +13,7 @@ from copy import copy
 from opt_einsum import contract
 import matplotlib.pyplot as plt
 from matplotlib import colormaps
+from scipy.ndimage import gaussian_filter1d
 try:
     import pretty_traceback
     pretty_traceback.install()
@@ -373,6 +374,8 @@ class RealHTC:
         Vs = np.zeros((Nt, self.Q0+1), dtype=float)
         ZQns = np.zeros((Nt, self.Nk), dtype=float)
         ZQs = np.zeros(Nt, dtype=float)
+        Pnns = np.zeros((Nt, self.Nk), dtype=complex)
+        Dnns = np.zeros((Nt, self.Nk), dtype=float)
         self.dynamics = {'t': self.t_fs,
                          'nP': nPs,
                          'nK': nKs,
@@ -383,6 +386,8 @@ class RealHTC:
                          'V': None, 
                          'ZQn': ZQns,
                          'ZQ': ZQs,
+                         'Pnn': Pnns,
+                         'Dnn': Dnns,
                          }
 
     def record_dynamics(self, t_index, y):
@@ -409,29 +414,39 @@ class RealHTC:
         self.check_real(nM, t_index, 'electronic population')
         self.dynamics['nM'][t_index] = np.real(nM)
         gRR = np.zeros(self.Q0+1, dtype=complex)
-        if np.allclose(nPh, 0.0):
-            g1 = np.zeros(self.Nk, dtype=complex)
-        else:
-            g1 = a_dag_a[:,self.Q0]/np.sqrt(nPh * a_dag_a[self.Q0,self.Q0])
+        g1 = np.zeros(self.Nk, dtype=complex)
+        #if not np.allclose(nPh, 0.0):
+        if not np.isclose(a_dag_a[self.Q0,self.Q0], 0.0):
+            #g1 = a_dag_a[:,self.Q0]/np.sqrt(nPh * a_dag_a[self.Q0,self.Q0])
+            for n in range(self.Nk):
+                if not np.isclose(nPh[n], 0.0):
+                    g1 = a_dag_a[n,self.Q0]/np.sqrt(nPh[n]*a_dag_a[self.Q0,self.Q0])
+                if n > self.Q0:
+                    continue
             for n in range(self.Q0+1):
                 numer = a_dag_a[self.Q0+n,self.Q0-n]
                 denom = np.sqrt(nPh[self.Q0+n] * nPh[self.Q0-n])
-                gRR[n] = numer / denom
-        if np.allclose(sig_z, -1.0, atol=1e-5):
-            d1 = np.zeros(self.Nk, dtype=complex)
-        else:
+                if not np.isclose(denom, 0.0):
+                    gRR[n] = numer / denom
+        d1 = np.zeros(self.Nk, dtype=complex)
+        if not np.isclose(sig_z[self.Q0], -1.0, atol=1e-6):
+            for n in range(self.Nk):
+                if not np.isclose(sig_z[n], -1.0, atol=1e-6):
+                    d1[n] =  2 * sig_plus_sig_minus[n, self.Q0] / np.sqrt((1+sig_z[n])*(1+sig_z[self.Q0]))
             #d1 = sig_plus_sig_minus[:, self.Q0] 
-            d1 = 2 * sig_plus_sig_minus[:, self.Q0] / np.sqrt((1+sig_z)*(1+sig_z[self.Q0]))
+            #d1 = 2 * sig_plus_sig_minus[:, self.Q0] / np.sqrt((1+sig_z)*(1+sig_z[self.Q0]))
             #d1[self.Q0] = 1.0
         self.dynamics['g1'][t_index] = g1
         self.dynamics['g1RR'][t_index] = gRR
         self.dynamics['d1'][t_index] = d1
-        self.dynamics['ZQn'][t_index], self.dynamics['ZQ'][t_index] = self.ZQs(state)
+        self.dynamics['ZQn'][t_index], self.dynamics['ZQ'][t_index] = self.ZQs(state, t_index)
+        self.dynamics['Pnn'][t_index] = np.diag(a_sig_plus)
+        self.dynamics['Dnn'][t_index] = np.real(np.diag(sig_plus_sig_minus))
 
-    def ZQs(self, state):
+    def ZQs(self, state, t_index=0):
         name = 'sig_plus_sig_minus'
         spsm = state[self.state_dic[name]['slice']].reshape(self.state_dic[name]['shape'])
-        ZQn = np.diag(spsm)
+        ZQn = np.abs(np.diag(spsm))
         #ZQ2 = 2 * (1/self.Nk)*(1/(self.Nk-1)) * np.sum(np.triu(spsm, k=1))
         #ZQ2 = (1/self.Nk)*(1/(self.Nk-1)) * (np.sum(np.triu(spsm, k=1))+np.sum(np.tril(spsm,k=-1)))
         #ZQ2 = (1/self.Nk**2) * (np.sum(np.triu(spsm, k=1))+np.sum(np.tril(spsm,k=-1))+np.sum(ZQn))
@@ -439,9 +454,9 @@ class RealHTC:
         spsm_copy[np.diag_indices(self.Nk)] = 0.0
         ZQ2 = self.NE**2 * np.sum(spsm_copy) + self.NE*(self.NE-1)*np.sum(ZQn)
         ZQ2 /= self.params.Nm*(self.params.Nm-1)
-        self.check_real(0, ZQn, 'ZQn')
+        self.check_real(t_index, ZQn, 'ZQn')
         ZQn = np.real(ZQn)
-        self.check_real(0, ZQ2, 'ZQ2')
+        self.check_real(t_index, ZQ2, 'ZQ2')
         ZQ2 = np.real(ZQ2)
         return ZQn, ZQ2    
 
@@ -505,6 +520,36 @@ def plot_dynamics(params, tend=250):
     fig.savefig('figures/real_space_dynamics.png', bbox_inches='tight', dpi=350)
     plt.close(fig)
 
+def plot_waterfalls(params, tend=250, num=5):
+    dt = tend / (num-1)
+    params.dt = dt
+    htc = RealHTC(params)
+    results = htc.evolve(tend=tend)
+    fig, axes = plt.subplots(2, 2, figsize=(8,8), constrained_layout=True, sharex=True)
+    axes[0,0].set_title(r'$n_{nn}$')
+    axes[0,1].set_title(r'$S_n$')
+    axes[1,0].set_title(r'$|P_{nn}|$')
+    axes[1,1].set_title(r'$D_{nn}$')
+    fig.suptitle(r'$N_k={Nk}\ N_E={NE}\ g={g}\ \kappa={kappa}\ \Gamma^\downarrow={Gam_down:.2g}\  t={t}\ \gamma^{{\rm{{ee}}}}={gam_ee}$'.format(**params.__dict__) + '\n' +  r'$\quad \Gamma^\uparrow(0)/\Gamma^\downarrow={:.2g}$'.format(params.pump_strength/params.Gam_down))
+    Ks = htc.Ks[htc.Q0:]
+    dyn = results['dynamics']
+    arrs = [arr[:, htc.Q0:] for arr in [dyn['nP'], (2/params.NE) * dyn['nM'] - 1, np.abs(dyn['Pnn']), dyn['Dnn']]]
+    offsets = [0.15 * np.max(arr) for arr in arrs]
+    colors = plt.cm.coolwarm(np.linspace(0,1,num))
+    for i, t in enumerate(dyn['t']):
+        p0 = axes[0,0].plot(Ks, i * offsets[0] + arrs[0][i], label=r'${:.0f}$'.format(t), color=colors[i])
+        p1 = axes[0,1].plot(Ks, i * offsets[1] + arrs[1][i], label='{:.0f}'.format(t), color=colors[i])
+        szs = arrs[1][i]
+        if szs[0] >= 0.0:
+            j = next((k for k, z in enumerate(szs) if z <= 0.0), -1)
+            axes[0,0].axvline(Ks[j], ls='--', color=colors[i], alpha=0.8)
+            axes[0,1].axhline(i * offsets[1], label=r'$0$', ls='--', alpha=0.8, c=colors[i])
+        axes[1,0].plot(Ks, i * offsets[2] + arrs[2][i], label='{:.0f}'.format(t), color=colors[i])
+        axes[1,1].plot(Ks, i * offsets[3] + arrs[3][i], label='{:.0f}'.format(t), color=colors[i])
+    axes[0,0].legend(title=r'$t$ (fs)')
+    fig.savefig('figures/real_space_waterfalls.png', bbox_inches='tight', dpi=350)
+
+
 def plot_input_output(params, pump_strngths, tend=250,
                       normalise=False, 
                       max_nph_curves=5,
@@ -542,11 +587,13 @@ def plot_input_output(params, pump_strngths, tend=250,
         nph_final[i, :] = results['dynamics']['nP'][-1, :]
         nK_final[i, :] = results['dynamics']['nK'][-1, :] # already fftshifted to ascending order
         nM_final[i, :] = results['dynamics']['nM'][-1, :]
+
         g1_final[i, :] = results['dynamics']['g1'][-1, :]
         g1RR_final[i, :] = results['dynamics']['g1RR'][-1, :]
         d1_final[i] = results['dynamics']['d1'][-1]
         ZQn_final[i] = results['dynamics']['ZQn'][-1]
         ZQ2_final[i] = results['dynamics']['ZQ'][-1]
+        #print(np.allclose(results['dynamics']['nP'][-1], results['dynamics']['nP'][-1], atol=1e-8))
         if i not in select_indices:
             continue
         if normalise:
@@ -556,8 +603,22 @@ def plot_input_output(params, pump_strngths, tend=250,
         y2 = nM_final[i, :]/params.NE
         y3 = nK_final[i, :]
         pump_str = r'${:.2g}$'.format(round(ratios[i],5))
-        axes[0,1].plot(y1[htc.Q0:], label=pump_str)
+        p1 = axes[0,1].plot(y1[htc.Q0:], label=pump_str)
         axes[1,1].plot(y2[htc.Q0:], label=pump_str)
+        sz_final = (2/htc.NE) * nM_final[i, :] - 1
+        report = False
+        j = None
+        if sz_final[htc.Q0] >= 0.0:
+            j = next((k for k, z in enumerate(sz_final[htc.Q0:]) if z <= 0.0), htc.Q0)
+            j += htc.Q0
+            axes[0,1].axvline(htc.Ks[j], ls='--', c=p1[0].get_color())
+            report = True
+        Dj = np.argmax(ZQn_final[i,htc.Q0:]) 
+        if Dj > 2:
+            report = True
+            axes[0,1].axvline(htc.Ks[Dj+htc.Q0], ls=':', c=p1[0].get_color())
+        if report:
+            logger.info('Pump {:.2g}, Sz=0 at n={}, Dnn=max at n={}'.format(ratios[i], j-htc.Q0, Dj))
         #from scipy.signal import argrelmax
         #print(argrelmax(np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
         #print(argrelmax(-np.abs(g1_final[i,htc.Q0:]), mode='wrap'))
@@ -632,7 +693,22 @@ def plot_input_output(params, pump_strngths, tend=250,
     axes[0,0].loglog(ratios, nph_tots)
     axes[1,0].loglog(ratios, nM_tots)
     axesS[0,0].loglog(ratios, np.abs(ZQ2_final))
-    axesS[1,0].loglog(ratios, np.abs(np.sum(ZQn_final,axis=1)))
+    ZQn_tot = np.abs(np.sum(ZQn_final,axis=1))
+    axesS[1,0].loglog(ratios, ZQn_tot)
+    # smooth (VERY HEAVY, GIVES TRIVIAL LINE AS RESULT??)
+    smooth = gaussian_filter1d(ZQn_tot, 100)
+    #axesS[1,0].loglog(ratios, smooth)
+    # compute second derivative
+    smooth_d2 = np.gradient(np.gradient(smooth))
+    # find switching points
+    infls = np.where(np.diff(np.sign(smooth_d2)))[0]
+    #axesS[1,0].plot(np.max(smooth)*(smooth_d2)/(np.max(smooth_d2)-np.min(smooth_d2)) , label='Second Derivative (scaled)')
+    #print(infls, 'XXXX')
+    logger.warning('ZQ inflection point code not working')
+    for i, infl in enumerate(infls):
+        #print(ratios[infl])
+        axesS[1,0].axvline(x=ratios[infl], color='k', label=f'Inflection Point {i}', ls='--', alpha=0.6)
+        axes[0,0].axvline(x=ratios[infl], color='k', label=f'Inflection Point {i}', ls='--', alpha=0.6)
     #axes[2,0].plot(ratios, np.abs(g1_final[:,htc.Q0]))
     #axes[2,0].set_xscale('log')
     axesS[1,1].legend(title=pump_title)
@@ -656,30 +732,32 @@ if __name__ == '__main__':
         #format='%(filename)s L%(lineno)s %(asctime)s %(levelname)s: %(message)s',
         level=logging.INFO,
         datefmt='%H:%M')
+    ################################
     params = Parameters(omega_0=1.0, # zero-phonon line
                         omega_c=1.0, # MIDDLE of tight-binding dispersion
-                        Q0=30, # 2*Q0+1 sites (so Q0 to the right of 0)
+                        Q0=40, # 2*Q0+1 sites (so Q0 to the right of 0)
                         NE=100, # Number of emitters per gap
                         g=0.01, # INDIVIDUAL light-matter coupling (collective gSqrtNE)
-                        t=0.4, # Hopping parameter (photon)
-                        #tau=0.0, # Hopping parameter (exciton)
-                        tau=1e-4, # TESTING
+                        t=0.4, # Hopping parameter
+                        tau=0.0/100, # Hopping parameter (exciton)
                         kappa=0.1, # photon loss
                         Gam_z=0.0, # emitter pure dephasing
-                        Gam_down=1e-4, # emitter decay
-                        gam_ee=1e-4, # emitter EEA rate
+                        Gam_down=0.0001, # emitter decay
+                        gam_ee=0.0001, # emitter EEA rate
                         pump_strength=0.1, # emitter pump strength (maximum of Gaussian), overwritten in plot_input_output below
-                        pump_width=4, # Pump width (Gaussian s.d.) in number of SITES
-                        )
-    #plot_dynamics(params) # total photon number and molecular population vs time (check convergence)
-    #min_dec, max_dec = 0, 2
-    #ratios = np.logspace(min_dec, max_dec, num=max_dec-min_dec+1)
-    #pump_strengths = ratios * params.Gam_down
-    #pump_strengths = params.Gam_down * np.logspace(0.5, 1.6, num=5) # gam_ee = 0.0
-    pump_strengths = params.Gam_down * np.logspace(1, 3, num=20) # gam_ee = 1e-4
-    plot_input_output(params, pump_strengths,
-                      normalise=True, # optional, normalise photon population by the population at R=0
-                      max_nph_curves=5, # optional, only plot this many curves (if pump_strengths contains more)
-                      xlims=[None, 15], # optional, x limits (number of sites) for nph and molecular probability plots
-                      )
+                        pump_width=2, # Pump width (Gaussian s.d.) in number of SITES
 
+                        )
+
+    pump_strengths = params.Gam_down * np.logspace(0.1, 3, num=25)
+    #params.pump_strength = pump_strengths[-2]
+    #plot_waterfalls(params, tend=200, num=6)
+    params.pump_strength = pump_strengths[-8]
+    plot_waterfalls(params, tend=100, num=8)
+    #plot_input_output(params, pump_strengths,
+    #                  normalise=True, # optional, normalise photon population by the population at R=0
+    #                  max_nph_curves=5, # optional, only plot this many curves (if pump_strengths contains more)
+    #                  xlims=[-0.5, 15], # optional, x limits (number of sites) for nph and molecular probability plots
+    #                  )
+
+###
