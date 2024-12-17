@@ -67,6 +67,7 @@ class HTC:
             'as_coherent': False, # True to turn on g(a . sigma^+ . b^- + H.C.) terms
             'dt': 0.5, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'plasmonic', # or 'tight-binding', 'two-node' - sets the dispersion ('two-node' is tight-binding but only coupling points at k= \pm \pi/(2 Delta r) [N.B. assumes all but those entires are zero in the initial state]
+            'store_n_nm': True,
             }
 
     @classmethod
@@ -739,6 +740,10 @@ class HTC:
         vpops = np.zeros((Nt, self.Nnu, self.Nk), dtype=float) # 2024-05-05 r_n index now last
         ph_dic = self.blank_density_dic() # 2024-05-30
         #vpops = np.zeros((Nt, self.Nk, self.Nnu), dtype=float)
+        if self.params['store_n_nm']:
+            n_nms = np.zeros((Nt, self.Nk, self.Nk), dtype=complex)
+        else:
+            n_nms = None
         self.dynamics = {'t': self.t_fs,
                          'r': self.rs, 
                          'aTMk': aTMks,
@@ -751,6 +756,7 @@ class HTC:
                          'V': Vs, 
                          'vpop': vpops,
                          'ph_dic':ph_dic,
+                         'n_nm': n_nms,
                          }
 
     def blank_density_dic(self, dtype=float):
@@ -842,6 +848,8 @@ class HTC:
         self.dynamics['g1'][t_index] = g1
         self.dynamics['g1RR'][t_index] = g1RR
         self.dynamics['V'][t_index] = V
+        if self.params['store_n_nm']:
+            self.dynamics['n_nm'][t_index] = dft2
         # Moments for photon density dic
         self.dynamics['ph_dic']['vals'][t_index] = np.real(nph)
         self.calculate_moments('ph_dic', t_index)
@@ -1152,6 +1160,10 @@ class HTC:
                 fit = None
         return plot_tP, to_plot, None
         logger.warning('Too few data points to generate fit')
+
+    def plot_phase_dynamics(self):
+        #TODO
+        pass
 
     def plot_dynamics(self):
         fig, axes = plt.subplots(2, 2, figsize=(8,8), constrained_layout=True)
@@ -1787,6 +1799,7 @@ if __name__ == '__main__':
             'dt': 100.0, # interval at which solution is sampled. Does not affect accuracy of solution 
             'model': 'tight-binding', # dispersion to use 
             #'model': 'two-node', # tight-binding dispersion... but only counting two modes
+            'store_n_nm': True, # store entire array of photon expectations <a_n^dag a_m>
             }
     #mf_parameters = plasmon_parameters.copy() # a and coherences decay..
     #mf_parameters = tb_parameters.copy() # a diverges)
