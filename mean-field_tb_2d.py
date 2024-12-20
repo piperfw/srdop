@@ -73,10 +73,9 @@ class RealHTC:
         params.Nm = params.Nk * params.NE
         self.Q0, self.Nk, self.NE = params.Q0, params.Nk, params.NE
         params.gam_E = ( params.NE - 1 ) * params.gam_ee
-        self.ns = np.arange(self.Nk)
-        self.Ks = self.ns - self.Q0
+        self.nxs, self.nys = np.meshgrid(np.arange(self.Nk), np.arange(self.Nk), indexing='ij')
+        self.Kxs, self.Kys = self.nxs - self.Q0, self.nys - self.Q0
         self.delta = np.eye(self.Nk)
-
     def create_slices(self):
         Nk = self.Nk
         names = ['a', 'sig_minus',  'sig_z']
@@ -84,7 +83,7 @@ class RealHTC:
         slice_dic = {}
         split_list = []
         for name in names:
-            next_index = state_index + self.Nk
+            next_index = state_index + self.Nk**2
             slice_dic[name] = slice(state_index,  next_index)
             split_list.append(next_index)
             state_index = next_index
@@ -98,63 +97,50 @@ class RealHTC:
         state[self.slice_dic['a']] = 0.1/np.sqrt(self.NE)
         state[self.slice_dic['sig_z']] = - 1.0
         self.initial_state = state
-
-    def gaussian(self, n, _max, _width, _offset=0):
+    def gaussian(self, nx, ny, _max, _width, _offset=0):
         n0 = self.Q0 + _offset
-        return _max * np.exp(- 0.5 * ((n-n0)/_width)**2)
+        return _max * np.exp(- 0.5 * ((nx-n0)/_width)**2 - 0.5 * ((ny-n0)/_width)**2)
     
-    def pump(self, n):
-        return self.gaussian(n,
+    def pump(self, n_x, n_y):
+        return self.gaussian(n_x, n_y,
                              self.params.pump_strength,
                              self.params.pump_width)
-
     def create_pump(self):
         Nk = self.Nk
-        self.pumps = self.pump(self.ns)
+        self.pumps = self.pump(self.nxs, self.nys)
         self.Gam_T = self.pumps + self.params.Gam_down
         self.Gam_n = self.Gam_T + 4 * self.params.Gam_z
         self.Gam_D = self.pumps - self.params.Gam_down
 
-    def omega(self, K):
-        kdr = K * (2*np.pi/self.Nk)
-        return self.params.omega_c - 2 * self.params.t * np.cos(kdr)
+    def omega(self, K_x, K_y):
+        kxdr = K_x * (2*np.pi/self.Nk)
+        kydr = K_y * (2*np.pi/self.Nk)
+        return self.params.omega_c - 2 * self.params.t * (np.cos(kxdr) + np.cos(kydr))
+
+    def split_reshape(self, state):
+        #a, sig_minus, sig_z = np.split(state, self.split_list)
+        return [x.reshape((self.Nk, self.Nk)) for x in np.split(state, self.split_list)]
 
     def eoms(self, t, state):
         """Mean-field EoMs in real space"""
-        a, sig_minus, sig_z = np.split(state, self.split_list)
         params = self.params
+        a_nm, s_nm, z_nm = self.split_reshape(state)
 
-        da = - (1j * params.omega_c + 0.5 * params.kappa) * a \
-             - 1j * params.gSqrtNE * sig_minus \
-             + 1j * params.t * (np.roll(a, 1) + np.roll(a, -1))
+        da_nm = - (1j * params.omega_c + 0.5 * params.kappa) * a_nm \
+                - 1j * params.gSqrtNE * s_nm \
+                + 1j * params.t * (np.roll(a_nm, 1, axis=0) + np.roll(a_nm, -1, axis=0)
+                                   + np.roll(a_nm, 1, axis=1) + np.roll(a_nm, -1, axis=1))
 
-        dsig_minus = -(1j * params.omega_0 + 0.5 * (self.Gam_n + params.gam_E)) * sig_minus \
-                     + 1j * params.gSqrtNE * sig_z * a \
-                     - 0.5 * params.gam_E * sig_z * sig_minus
+        ds_nm = -(1j * params.omega_0 + 0.5 * (self.Gam_n + params.gam_E)) * s_nm \
+                + 1j * params.gSqrtNE * z_nm * a_nm \
+                - 0.5 * params.gam_E * z_nm * s_nm
 
-        dsig_z = -(self.Gam_T + 2 * params.gam_E) * sig_z \
+        dz_nm = -(self.Gam_T + 2 * params.gam_E) * z_nm \
                  +(self.Gam_D - params.gam_E) \
-                 - 4 * params.gSqrtNE * np.imag(sig_minus * np.conj(a)) \
-                 - params.gam_E * sig_z**2
+                 - 4 * params.gSqrtNE * np.imag(s_nm * np.conj(a_nm)) \
+                 - params.gam_E * s_nm**2
         
-        #with np.printoptions(precision=2):
-        #    print(t, state, np.array([da[0], dsig_minus[0], dsig_z[0]]))
-        #if t>0.2:
-        #    sys.exit()
-        return np.concatenate((da, dsig_minus, dsig_z), axis=None)
-
-    def evolve_ivp(self, tend):
-        """Used for establishing match with single-mode case"""
-        result = solve_ivp(self.eoms, t_span=(0, tend), y0=self.initial_state,
-                           t_eval=None)
-        self.t=result.t
-        self.t_fs = result.t * self.EV_TO_FS
-        self.dynamics = {}
-        self.dynamics['t'] = self.t
-        self.dynamics['a_n'] = result.y[0,:]
-        self.dynamics['sig_minus_n'] = result.y[1,:]
-        self.dynamics['sig_z_n'] = np.real(result.y[2,:])
-        return {'dynamics':self.dynamics}
+        return np.concatenate((da_nm, ds_nm, dz_nm), axis=None)
 
     def evolve(self, tend=250.0, atol=1e-8, rtol=1e-6):
         """Integrate equations of motion from t=0 to  t=tend (femptoseconds)"""
@@ -173,7 +159,7 @@ class RealHTC:
         next_check_i = 1
         last_solver_i = 0
         solver_t = [] # keep track of solver times too (not fixed grid)
-        logger.info(f'Evolving {self.eoms.__doc__} to tend={tend} fs at pump_strength={params.pump_strength:.2f}')
+        logger.info(f'Evolving {self.eoms.__doc__} to tend={tend} fs at pump_strength={params.pump_strength:.2g}')
         tic = time() # time the computation
         solver = SOLVER(self.eoms,
                         t0=0.0,
@@ -232,16 +218,13 @@ class RealHTC:
         non-zero values in place by self.record_dynamics during the computation
         """
         Nt = self.num_t
-        a_n = np.zeros((Nt, self.Nk), dtype=complex)
-        sig_minus_n = np.zeros((Nt, self.Nk), dtype=complex)
-        sig_z_n = np.zeros((Nt, self.Nk), dtype=float)
-        #g1s = np.zeros((Nt, self.Nk), dtype=complex)
-        #ZQns = np.zeros((Nt, self.Nk), dtype=float)
-        #ZQs = np.zeros(Nt, dtype=float)
+        a_nm = np.zeros((Nt, self.Nk, self.Nk), dtype=complex)
+        s_nm = np.zeros((Nt, self.Nk, self.Nk), dtype=complex)
+        z_nm = np.zeros((Nt, self.Nk, self.Nk), dtype=float)
         self.dynamics = {'t': self.t_fs,
-                         'a_n': a_n,
-                         'sig_minus_n': sig_minus_n,
-                         'sig_z_n': sig_z_n,
+                         'a_nm': a_nm,
+                         's_nm': s_nm,
+                         'z_nm': z_nm,
                          }
 
     def record_dynamics(self, t_index, y):
@@ -251,10 +234,10 @@ class RealHTC:
         function to take state, calculate value of observable and assign to
         self.dynamics['my_obs'][t_index]
         """
-        a, sig_minus, sig_z = np.split(y, self.split_list)
-        self.dynamics['a_n'][t_index] = a
-        self.dynamics['sig_minus_n'][t_index] = sig_minus
-        self.dynamics['sig_z_n'][t_index] = np.real(sig_z)
+        a_nm, s_nm, z_nm = self.split_reshape(y)
+        self.dynamics['a_nm'][t_index] = a_nm
+        self.dynamics['s_nm'][t_index] = s_nm
+        self.dynamics['z_nm'][t_index] = np.real(z_nm)
 
     def plot_dispersion_pump(self):
         fig, axes = plt.subplots(1,2, figsize=(8,4), constrained_layout=True)
@@ -262,111 +245,91 @@ class RealHTC:
         axes[0].set_title(r'$\hbar\omega_K$' + r' $(\rm{eV})$')
         axes[1].set_title(r'$\Gamma_\uparrow(r_n)\ (\sigma={}$'.format(
             params.pump_width)+r'$\rm{nm})$')
-        all_Ks = np.linspace(-self.Q0, self.Q0, 250)
-        all_y = self.omega(all_Ks)
-        all_ns = np.linspace(0, self.Nk, 250)
-        all_pumps = self.pump(all_ns)
-        select_pumps = self.pump(self.ns)
-        axes[0].plot(all_Ks, all_y)
-        Q0=self.Q0
-        Nk=self.Nk
-        ticks = [-(Nk/2), -(Nk/4), 0, (Nk/4), (Nk/2)]
-        tick_labels = [r'$-\pi/\Delta r$', r'$-\pi/(2\Delta r)$',r'$0$', r'$\pi/2(\Delta r) $',r'$\pi/\Delta r $']
-        axes[0].set_xlim([-(Nk/2), (Nk/2)])
-        axes[0].set_xticks(ticks)
-        axes[0].set_xticklabels(tick_labels)
-        axes[0].axhline(params.omega_0, c='r', label=r'$\omega_0$')
-        axes[0].legend()
-        axes[1].plot(all_ns, all_pumps)
-        axes[1].scatter(self.ns, select_pumps, c='r', s=8, zorder=2)
-        fp = os.path.join(self.DEFAULT_DIRS['figures'], 'real_space_dispersion_pump.png')
+        all_Kxs, all_Kys = np.meshgrid(np.linspace(-self.Q0, self.Q0, 250), np.linspace(-self.Q0, self.Q0,250), indexing='ij')
+        all_y = self.omega(all_Kxs, all_Kys)
+        all_pumps = self.pump(self.nxs, self.nys)
+        cm = colormaps['viridis'] 
+        im = axes[0].imshow(all_y, origin='lower', aspect='auto',
+                            interpolation='none', extent=[-self.Q0,self.Q0,-self.Q0,self.Q0],
+                            cmap=cm)
+        axes[0].contour(all_Kxs, all_Kys, all_y, [self.params.omega_0])
+        im = axes[1].imshow(all_pumps, origin='lower', aspect='auto',
+                            interpolation='none', extent=[-self.Q0,self.Q0,-self.Q0,self.Q0],
+                            cmap=cm)
+        fp = os.path.join('figures/2d_real_space_dispersion_pump.png')
         fig.savefig(fp, bbox_inches='tight', dpi=350)
         plt.close(fig)
 
+def plot_phases(params, tend=500):
+    fig_t, ax_t = plt.subplots()
+    fig, axes=plt.subplots(2,4,figsize=(12,6.5),sharex=True)
+    axes=axes.flatten()
+    htc = RealHTC(params)
+    cm = colormaps['viridis']
+    htc.evolve(tend=tend)
+    Q0=htc.Q0
+    min_n = Q0//2
+    max_n = 3 * Q0//2
+    num = 8
+    for i in range(num):
+        Delta_t = i * params.dt
+        ind = -1 - i
+        axes[num-1-i].set_title(rf'$t_f-{Delta_t:.1f}$')
+        vals = np.angle(htc.dynamics['a_nm'][ind])[min_n:max_n+1, min_n:max_n+1]
+        #vals -= np.angle(htc.dynamics['a_nm'][ind-1])[min_n:max_n+1, min_n:max_n+1]
+        im = axes[num-1-i].imshow(vals,
+                              interpolation='none',
+                              cmap=cm,
+                              extent=[-min_n,min_n,-min_n,min_n],
+                              origin='lower',
+                              vmin=-np.pi,
+                              vmax=np.pi,
+                              aspect='equal')
+        if i < num-4:
+            continue
+        cbar = fig.colorbar(im, ax=axes[i], aspect=20, location='bottom')
+        cbar.ax.set_xticks([-np.pi,0,np.pi])
+        cbar.ax.set_xticklabels([r'$-\pi$',r'$0$',r'$\pi$'])
+    ax_t.plot(htc.t_fs, np.abs(htc.dynamics['a_nm'][:,Q0,Q0])**2)
+    fig_t.savefig('figures/mean-field_2d_phase_dynamics.png')
+    plt.close(fig_t)
+    fig.suptitle(r'$t_f={}$'.format(tend))
+    fig.savefig('figures/mean-field_2d_phase.png')
+    plt.close(fig)
+
 def plot_input_output(params, pump_strengths, tend=500):
     fig, axes = plt.subplots(2,2,figsize=(10,8))
-    params.dt = 10
+    params.dt = 100
     for i, pump in enumerate(pump_strengths):
         params.pump_strength = pump
         pump_str = '{:.2g}'.format(pump/params.Gam_down)
         htc = RealHTC(params)
         htc.evolve(tend=tend)
-        ada = np.abs(htc.dynamics['a_n'][-1])**2
+        n_nn = np.abs(np.diag(htc.dynamics['a_nm'][-1]))**2
         Q0 = htc.Q0
-        xs = htc.ns[Q0:]-Q0
-        ada_norm = np.max(ada)
-        #ada_norm = 1
-        axes[0,0].plot(xs, ada[Q0:]/ada_norm, label=pump_str)
-        axes[0,1].plot(xs, np.angle(htc.dynamics['a_n'][-1][Q0:]), label=pump_str)
-        axes[1,0].plot(xs, htc.dynamics['sig_z_n'][-1][Q0:], label=pump_str)
-        axes[1,1].plot(htc.dynamics['t'], np.abs(htc.dynamics['a_n'][:,htc.Q0])**2)
-    axes[0,0].set_title(r'$|\langle a_n \rangle|^2$ (normalised)')
-    axes[1,1].set_title(r'$|\langle a_{n=0} \rangle|^2/N_E$')
-    axes[0,1].set_title(r'Arg$\langle a_n \rangle$')
-    axes[1,0].set_title(r'$\langle \sigma^z_n \rangle$')
+        xs = np.arange(-Q0, Q0+1, dtype=int)[Q0:]
+        n_norm = np.max(n_nn)
+        #n_norm=1
+        cm = colormaps['viridis']
+        axes[0,0].plot(xs, n_nn[Q0:]/n_norm, label=pump_str)
+        if i == len(pump_strengths)-1:
+            im = axes[0,1].imshow(np.angle(htc.dynamics['a_nm'][-1]),
+                              interpolation='none',
+                              cmap=cm,
+                              extent=[-Q0,Q0,-Q0,Q0],
+                              origin='lower',
+                              aspect='auto')
+            cbar = fig.colorbar(im, ax=axes[0,1], aspect=20)
+        axes[1,0].plot(xs, np.diag(htc.dynamics['z_nm'][-1])[Q0:])
+        axes[1,1].plot(htc.dynamics['t'], np.abs(htc.dynamics['a_nm'][:,htc.Q0, htc.Q0])**2)
+    axes[0,0].set_title(r'$|\langle a_{nn} \rangle|^2$ (normalised)')
+    axes[1,1].set_title(r'$|\langle a_{n=m=0} \rangle|^2/N_E$')
+    axes[0,1].set_title(r'Arg$\langle a_{nm} \rangle$')
+    axes[1,0].set_title(r'$\langle \sigma^z_{nn} \rangle$')
     axes[0,0].legend(title=r'$\Gamma^\uparrow/\Gamma^\downarrow$')
     axes[1,0].set_xlabel(r'$n$')
     axes[1,1].set_xlabel(r'$t$ (fs)')
-    fig.savefig('figures/mean-field_input_output.png')
-
-
-def plot_dynamics(params, tend=250):
-    htc = RealHTC(params)
-    htc.plot_dispersion_pump()
-    results = htc.evolve(tend=tend)
-    samples = 6
-    #sample_i = np.linspace(htc.Q0//2, 3*htc.Q0//2, samples, dtype=int)
-    sample_i = np.linspace(0, htc.Q0, samples, dtype=int)
-    a_ns = results['dynamics']['a_n']
-    sig_minus_ns = results['dynamics']['sig_minus_n']
-    sig_z_ns = results['dynamics']['sig_z_n']
-    ts = results['dynamics']['t']
-    fig, axes = plt.subplots(2, 2, figsize=(8,8), constrained_layout=True, sharex=True)
-    axes[1,0].set_xlabel(r'$t$ (fs)')
-    axes[0,0].set_title(r'$|\langle a_n\rangle|/\sqrt{N_E}$')
-    axes[0,1].set_title(r'Arg$\langle a_n\rangle$')
-    axes[1,0].set_title(r'$|\langle \sigma^-_n\rangle|$')
-    axes[1,1].set_xlabel(r'$t$ (fs)')
-    axes[1,1].set_title(r'$\langle \sigma^z_n\rangle$')
-    for i in sample_i:
-        a_n = a_ns[:, i]
-        sig_minus_n = sig_minus_ns[:, i]
-        sig_z_n = sig_z_ns[:, i]
-        axes[0,0].plot(ts, np.abs(a_n), label=r'${}$'.format(htc.ns[i]))
-        axes[0,1].plot(ts, np.angle(a_n), label=r'${}$'.format(htc.ns[i]))
-        axes[1,0].plot(ts, np.abs(sig_minus_n), label=r'${}$'.format(htc.ns[i]))
-        axes[1,1].plot(ts, sig_z_n, label=r'${}$'.format(htc.ns[i]))
-    axes[0,0].legend(title='Site #')
-    fig.savefig('figures/mean-field_photon_dynamics.png', bbox_inches='tight', dpi=350)
-    plt.close(fig)
-
-
-def single_mode_comparison():
-    params = Parameters(omega_0=0.0, 
-                        omega_c=0.0, # MIDDLE of tight-binding dispersion
-                        Q0=0, # 2*Q0+1 sites (so Q0 to the right of 0)
-                        NE=100, # Number of emitters per gap
-                        g=0.1, # INDIVIDUAL light-matter coupling (collective gSqrtNE)
-                        t=0.0, # Hopping parameter
-                        kappa=0.01, # photon loss
-                        Gam_z=0.0, # emitter pure dephasing
-                        Gam_down=0.001, # emitter decay
-                        gam_ee=0.0, # emitter EEA rate
-                        pump_strength=0.1, # emitter pump strength (maximum of Gaussian), overwritten in plot_input_output below
-                        pump_width=2, # Pump width (Gaussian s.d.) in number of SITES
-                        dt=0.1,
-                        )
-    htc = RealHTC(params)
-    htc.plot_dispersion_pump()
-    results = htc.evolve_ivp(tend=500)
-    #results = htc.evolve(tend=500)
-    t = results['dynamics']['t']
-    ns = params.NE * np.abs(results['dynamics']['a_n'])**2
-    szs = results['dynamics']['sig_z_n']
-    fig, axes = plt.subplots(1,2,figsize=(8,4))
-    axes[0].plot(t, ns)
-    axes[1].plot(t, szs)
-    fig.savefig('figures/single-mode_mean-field_comparison.png', dpi=450, bbox_inches='tight')
+    fig.savefig('figures/mean-field_2d_input_output.png')
 
 if __name__ == '__main__':
     logging.basicConfig(
@@ -374,22 +337,23 @@ if __name__ == '__main__':
         level=logging.INFO,
         datefmt='%H:%M')
     ################################
-    params = Parameters(omega_0=1.0, # zero-phonon line
-                        omega_c=1.0, # MIDDLE of tight-binding dispersion
+    params = Parameters(omega_0=0.0, # zero-phonon line
+                        omega_c=0.0, # MIDDLE of tight-binding dispersion
                         Q0=40, # 2*Q0+1 sites (so Q0 to the right of 0)
                         NE=100, # Number of emitters per gap
                         g=0.01, # INDIVIDUAL light-matter coupling (collective gSqrtNE)
-                        t=0.001, # Hopping parameter
+                        t=0.0001, # Hopping parameter
                         kappa=0.01, # photon loss
                         Gam_z=0.0, # emitter pure dephasing
                         Gam_down=0.001, # emitter decay
                         gam_ee=0.00001, # emitter EEA rate
                         pump_strength=0.1, # emitter pump strength (maximum of Gaussian), overwritten in plot_input_output below
                         pump_width=2, # Pump width (Gaussian s.d.) in number of SITES
-                        dt=0.1,
+                        dt=10,
                         )
     #single_mode_comparison()
-    pump_strengths = params.Gam_down * np.logspace(2, 3, num=4)
-    #pump_strengths = params.Gam_down * np.logspace(0,2, num=4)
-    plot_input_output(params, pump_strengths, tend=1000)
-    #plot_dynamics(params, tend=1000)
+    #pump_strengths = params.Gam_down * np.logspace(0, 1, num=4)
+    #pump_strengths = [0.002, 0.004, 0.008]
+    #plot_input_output(params, pump_strengths, tend=5000)
+    params.pump_strength = 0.004
+    plot_phases(params, tend=2500)
