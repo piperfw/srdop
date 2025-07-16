@@ -18,9 +18,32 @@ cumulant_in_code.pdf
 Summary of notations for cumulant equations and coefficients used in the code
 (which isn't in the thesis explicitly).
 
+real_space_tb.py
+----------------
+Code for 1D model solved with 2nd-order cumulants in real space (new main file)
+
+
+real_space_2d_tb.py
+-------------------
+Code for 2D model solved with 2nd-order cumulants in real space (experimental)
+
+
+mean-field_tb_1d.py
+----------------
+Code for 1D model solved with mean-field in real space (experimental)
+
+mean-field_tb_2d.py
+-------------------
+Code for 2D model solved with mean-field in real space (experimental)
+
+dispersion.py
+-------------
+Code to plot 1D plasmonic chain dispersion model from Downing et al. 2018 (J.
+Phys. Condens. Matter)
 
 Requirements
 ------------
 - python>=3.11
 - numpy, scipy, opt_einsum, matplotlib, mpmath, pretty_traceback (optional),
   progressbar, sparse
+
