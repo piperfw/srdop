@@ -39,6 +39,15 @@ class Parameters(SimpleNamespace):
                  ):
         super().__init__(**locals())
 
+
+def pow_str(flo, prec=1):
+    flo = float(flo)
+    r0a = '{:.{prec}e}'.format(flo, prec=prec).split('e')
+    r0a[1] = r0a[1].replace('0','')
+    r0a[1] = r0a[1].replace('+','')
+    return r'${}\!\times\!10^{{{}}}$'.format(*r0a)
+
+
 class RealHTC:
     EV_TO_FS = (constants.hbar/constants.e)*1e15 # convert time in electronvolts to time in fs
     DEFAULT_DIRS = {'data':'./data', 'figures':'./figures'} # output directories
@@ -303,12 +312,12 @@ class RealHTC:
             g1 = np.zeros(self.Nk, dtype=complex)
         else:
             g1 = a_dag_a[self.Q0,:,self.Q0,self.Q0]/np.sqrt(nPh[self.Q0,:] * nPh[self.Q0,self.Q0])
-            #for n in range(self.Q0+1):
-            #    numer = a_dag_a[self.Q0+n,self.Q0-n]
-            #    denom = np.sqrt(nPh[self.Q0+n] * nPh[self.Q0-n])
-            #    gRR[n] = numer / denom
+            for n in range(self.Q0+1):
+                numer = a_dag_a[self.Q0, self.Q0+n, self.Q0, self.Q0-n]
+                denom = np.sqrt(nPh[self.Q0, self.Q0+n] * nPh[self.Q0, self.Q0-n])
+                gRR[n] = numer / denom
         self.dynamics['g1'][t_index] = g1
-        #self.dynamics['g1RR'][t_index] = gRR
+        self.dynamics['g1RR'][t_index] = gRR
 
     WARN_REAL = {}
     def check_real(self, step, arr, name):
@@ -378,15 +387,16 @@ def plot_input_output(results_list,
     nM_final = np.zeros((num_pumps, Nk, Nk), dtype=float)
     nK_final = np.zeros((num_pumps, Nk, Nk), dtype=float)
     g1_final = np.zeros((num_pumps, Nk), dtype=complex)
-    #g1RR_final = np.zeros((num_pumps, params.Q0+1), dtype=complex)
+    g1RR_final = np.zeros((num_pumps, params.Q0+1), dtype=complex)
     #adaga_final = np.zeros((num_pumps, Nk, Nk), dtype=complex) 
     #adaga_final_mask = np.zeros((num_pumps, Nk, Nk), dtype=bool) 
     fig, axes = plt.subplots(3, 2, figsize=(8,10), constrained_layout=True, sharex=False)# sharex='col')
-    figk, axesk = plt.subplots(1,2, figsize=(8,3), constrained_layout=True)
+    fig2d, axes2d = plt.subplots(num_pumps, 2, figsize=(8,3*num_pumps), constrained_layout=True, sharex=False, sharey=False)
+    figk, axesk = plt.subplots(2,2, figsize=(8,6), constrained_layout=True)
     select_indices = np.round(np.linspace(0, num_pumps-1, max_nph_curves)).astype(int)
     pump_title = r'$\Gamma_\uparrow(0)/\Gamma_\downarrow$'
     Ks = np.arange(-params.Q0, params.Q0+1)
-    cm = colormaps['viridis'] 
+    cm = colormaps['viridis']
     Kextent = [-params.Q0,params.Q0,-params.Q0,params.Q0]
     myim = lambda ax, y, extent: ax.imshow(y, origin='lower', aspect='auto',
                             interpolation='none', extent=extent,
@@ -399,7 +409,7 @@ def plot_input_output(results_list,
         nK_final[i] = results['dynamics']['nK'][-1] # already fftshifted to ascending order
         nM_final[i] = results['dynamics']['nM'][-1]
         g1_final[i] = results['dynamics']['g1'][-1]
-        #g1RR_final[i, :] = results['dynamics']['g1RR'][-1, :]
+        g1RR_final[i, :] = results['dynamics']['g1RR'][-1, :]
         if i not in select_indices:
             continue
         if normalise:
@@ -408,31 +418,28 @@ def plot_input_output(results_list,
             y1 = ph_final[i]
         y2 = nM_final[i]/params.NE
         y3 = nK_final[i]
-        pump_str = r'${:.2g}$'.format(round(ratios[i],5))
+        #pump_str = r'${:.2g}$'.format(round(ratios[i],5))
+        pump_str = pow_str(round(ratios[i],5))
         axes[0,1].plot(y1[params.Q0, params.Q0:], label=pump_str)
         axes[1,1].plot(y2[params.Q0, params.Q0:], label=pump_str)
+        im = myim(axes2d[i,0], y2, Kextent)
+        cbar = fig2d.colorbar(im, ax=axes2d[i,0], aspect=20)
+        im = myim(axes2d[i,1], y3, Kextent)
+        cbar = fig2d.colorbar(im, ax=axes2d[i,1], aspect=20)
+        axes2d[i,1].set_xlabel(r'$K_x$')
+        axes2d[i,1].set_ylabel(r'$K_y$', rotation=0, labelpad=10)
+        axes2d[i,0].set_xlabel(r'$x$')
+        axes2d[i,0].set_ylabel(r'$y$', rotation=0, labelpad=10)
+        axes2d[i,0].set_title(pump_title + r'$=$' + pump_str)
+        axes2d[i,1].set_title(pump_title + r'$=$' + pump_str)
         if i==0:
             #im = myim(axesk[1], y1, Kextent)
-            im = myim(axesk[1], y3, Kextent)
-            cbar = figk.colorbar(im, ax=axesk[1], aspect=20)
-        #axes[2,1].plot(np.abs(g1_final[i,htc.Q0:]), label=pump_str)
-        #axes[2,0].plot(np.abs(g1RR_final[i,:]), label=pump_str)
-        axesk[0].plot(Ks, y3[params.Q0,:], label=pump_str)
-        #if i == num_pumps - 1:
-        #    Nk = htc.Nk
-        #    final_ada = results['final_state'][htc.state_dic['a_dag_a']['slice']].reshape((Nk, Nk))
-        #    nkp = fftshift(fft(ifft(final_ada, axis=0), axis=1))
-        #    mask, diff = htc.cauchy_mask(nkp)
-        #    adaga_one = np.ma.masked_array(np.copy(nkp),
-        #                                   mask=mask)
-        #    cm = colormaps['viridis'] 
-        #    cm.set_bad('red')
-        #    extent = [htc.Ks[0], htc.Ks[-1],htc.Ks[0], htc.Ks[-1]]
-        #    im = axesk[1].imshow(np.real(adaga_one), origin='lower', aspect='auto',
-        #                    interpolation='none', extent=extent, cmap=cm,
-        #                    label=r'${:.2g}$'.format(round(ratios[i],5)))
-        #    cbar = figk.colorbar(im, ax=axesk[1], aspect=20)
-        #    axesk[1].set_title(r'$\rm{Re}\,n_{kp}\quad($' + pump_title + r'$=$'+pump_str+r'$)$')
+            im = myim(axesk[0,1], y3, Kextent)
+            cbar = figk.colorbar(im, ax=axesk[0,1], aspect=20)
+            axesk[0,1].set_title(r'$n_{kk}\quad($' + pump_title + r'$=$' + pump_str +r')')
+        axes[2,1].plot(np.abs(g1_final[i,htc.Q0:]), label=pump_str)
+        axes[2,0].plot(np.abs(g1RR_final[i,:]), label=pump_str)
+        axesk[0,0].plot(Ks, y3[params.Q0,:], label=pump_str)
     #htc.plot_dispersion_pump()
     if xlims is not None:
         axes[0,1].set_xlim(xlims)
@@ -441,13 +448,22 @@ def plot_input_output(results_list,
         axes[2,0].set_xlim(xlims)
     ph_tots = np.sum(ph_final, axis=(1,2)) # Sum over all lattice positions 
     nM_tots = np.sum(nM_final, axis=(1,2)) # sum over all lattice positions
+    fig2d.suptitle('Photon number in real ($n_{xy}$, left) and Fourier ($n_{K_xK_y}$, right) space')
     axes[1,0].set_xlabel(pump_title)
     axes[2,0].set_xlabel(r'$n$')
     axes[2,1].set_xlabel(r'$n$')
-    axesk[0].set_xlabel(r'$K$')
-    axesk[1].set_xlabel(r'$K$')
-    axesk[1].set_ylabel(r'$K$')
-    axesk[0].set_title(r'$n_{kk}$')
+    axesk[0,0].set_xlabel(r'$K_y$')
+    axesk[0,1].set_xlabel(r'$K_x$')
+    axesk[0,1].set_ylabel(r'$K_y$', rotation=0, labelpad=10)
+    axesk[1,1].set_xlabel(r'$K$')
+    axesk[1,1].set_ylabel(r'$K$')
+    axesk[1,0].set_axis_off()
+    axesk[1,1].set_axis_off()
+    #axes2d[-1,1].set_xlabel(r'$K$')
+    #axes2d[-1,1].set_ylabel(r'$K$')
+    #axes2d[-1,0].set_xlabel(r'$n$')
+    #axes2d[-1,0].set_ylabel(r'$n$')
+    axesk[0,0].set_title(r'$n_{K_x=0,K_Y}$')
     #axes[0,1].set_title(r'$n_{\rm{ph}}(r_n)$')
     #axes[0,0].set_title(r'$\sum_n n_{\rm{ph}}(r_n)$')
     axes[0,1].set_title(r'$n_{nn}$')
@@ -462,13 +478,17 @@ def plot_input_output(results_list,
     #axes[2,0].plot(ratios, np.abs(g1_final[:,htc.Q0]))
     #axes[2,0].set_xscale('log')
     axes[1,1].legend(title=pump_title)
+    axes[2,1].legend(title=pump_title)
+    axes[2,0].legend(title=pump_title)
     axes[0,1].legend(title=pump_title)
-    axesk[0].legend(title=pump_title)
+    axesk[0,0].legend(title=pump_title)
     fig.suptitle(r'$N_k={Nk}\ N_E={NE}\ g={g}\ \kappa={kappa}\ \Gamma^\downarrow={Gam_down:.2g}\  t={t}\ \gamma^{{\rm{{ee}}}}={gam_ee}$'.format(**params.__dict__))
     fig.savefig('figures/2d_real_space_input_output.png', bbox_inches='tight', dpi=350)
-    figk.savefig('figures/2d_real_space_cauchy.png', bbox_inches='tight', dpi=350)
+    #figk.savefig('figures/2d_real_space_cauchy.png', bbox_inches='tight', dpi=350)
+    fig2d.savefig('figures/2d_real_space_steady_state.png', bbox_inches='tight', dpi=350)
     plt.close(fig)
     plt.close(figk)
+    plt.close(fig2d)
 
 if __name__ == '__main__':
     logging.basicConfig(
@@ -491,10 +511,13 @@ if __name__ == '__main__':
                         dt=10, # Timestep to record variables
                         )
     results_list = []
-    pump_strengths = [0.005, 0.01, 0.05, 0.1, 0.25]
+    #pump_strengths = [0.005, 0.01, 0.05, 0.1, 0.25]
+    pump_strengths = [0.00125, 0.005, 0.01, 0.02, 0.04]
     for pump in pump_strengths:
+        Nk = 2*params.Q0 + 1 # Number of sites
         params.pump_strength = pump
         htc = RealHTC(params)
+        #fp = f'data/2d/Nk{Nk}NE{params.NE}w0{params.omega_0}g{params.g}t{params.t}kappa{params.kappa}Gamz{params.Gam_z}Gamd{params.Gam_down}gamee{params.gam_ee}width{params.pump_width}_pump{pump}.pkl'
         fp = 'data/2d/w0{}Q0{}_pump{}.pkl'.format(params.omega_0, params.Q0, pump)
         print(pump, fp)
         if os.path.exists(fp):
