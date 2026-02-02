@@ -514,10 +514,12 @@ if __name__ == '__main__':
     #pump_strengths = [0.005, 0.01, 0.05, 0.1, 0.25]
     pump_strengths = [0.00125, 0.005, 0.01, 0.02, 0.04]
     for pump in pump_strengths:
-        Nk = 2*params.Q0 + 1 # Number of sites
+        Nk = 2*params.Q0 + 1 # side length
+        num_sites = Nk**2
         params.pump_strength = pump
         htc = RealHTC(params)
-        fp = f'data/2d/Nk{Nk}NE{params.NE}w0{params.omega_0}g{params.g}t{params.t}kappa{params.kappa}Gamz{params.Gam_z}Gamd{params.Gam_down}gamee{params.gam_ee}width{params.pump_width}_pump{pump}.pkl'
+        #fp = 'data/2d/w0{}Q0{}_pump{}.pkl'.format(params.omega_0, params.Q0, pump)
+        fp = f'data/2d/Nk{num_sites}NE{params.NE}w0{params.omega_0}g{params.g}t{params.t}kappa{params.kappa}Gamz{params.Gam_z}Gamd{params.Gam_down}gamee{params.gam_ee}width{params.pump_width}_pump{pump}.pkl'
         print(pump, fp)
         if os.path.exists(fp):
             with open(fp, 'rb') as fb:
