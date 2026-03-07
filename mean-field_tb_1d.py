@@ -15,8 +15,6 @@ import matplotlib.pyplot as plt
 from matplotlib import colormaps
 from scipy.ndimage import gaussian_filter1d
 import seaborn as sns
-import pretty_traceback
-pretty_traceback.install()
 
 logger = logging.getLogger(__name__)
 
@@ -379,11 +377,11 @@ if __name__ == '__main__':
                         Q0=40, # 2*Q0+1 sites (so Q0 to the right of 0)
                         NE=100, # Number of emitters per gap
                         g=0.01, # INDIVIDUAL light-matter coupling (collective gSqrtNE)
-                        t=0.001, # Hopping parameter
-                        kappa=0.01, # photon loss
+                        t=0.004, # Hopping parameter
+                        kappa=0.1, # photon loss
                         Gam_z=0.0, # emitter pure dephasing
-                        Gam_down=0.001, # emitter decay
-                        gam_ee=0.00001, # emitter EEA rate
+                        Gam_down=0.0001, # emitter decay
+                        gam_ee=0.0001, # emitter EEA rate
                         pump_strength=0.1, # emitter pump strength (maximum of Gaussian), overwritten in plot_input_output below
                         pump_width=2, # Pump width (Gaussian s.d.) in number of SITES
                         dt=0.1,

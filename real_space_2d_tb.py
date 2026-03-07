@@ -273,14 +273,12 @@ class RealHTC:
         nPs = np.zeros((Nt, self.Nk, self.Nk), dtype=float)
         nKs = np.zeros((Nt, self.Nk, self.Nk), dtype=float)
         nMs = np.zeros((Nt, self.Nk, self.Nk), dtype=float)
-        g1s = np.zeros((Nt, self.Nk), dtype=complex)
-        g1RRs = np.zeros((Nt, self.Q0+1), dtype=complex)
+        g1s = np.zeros((Nt, self.Q0+1), dtype=complex)
         self.dynamics = {'t': self.t_fs,
                          'nP': nPs,
                          'nK': nKs,
                          'nM': nMs,
                          'g1': g1s,
-                         'g1RR': g1RRs,
                          'V': None, 
                          }
 
@@ -297,7 +295,7 @@ class RealHTC:
         a_dag_a, sig_z, a_sig_plus, sig_plus_sig_minus, sig_z_sig_z = self.split_reshape(state)
         # The following directly update the instance variable self.dynamics 
         #self.calculate_photonic(t_index, a_dag_a) # Photon exciton densities
-        nPh = contract('xyxy->xy', a_dag_a)
+        nPh = contract('yxyx->yx', a_dag_a)
         self.check_real(nPh, t_index, 'photon number')
         self.dynamics['nP'][t_index] = np.real(nPh)
         nkp = fftshift(fft2(ifft2(a_dag_a, axes=[0,1]), axes=[2,3]))
@@ -307,17 +305,45 @@ class RealHTC:
         nM = self.NE * 0.5 * (sig_z + 1)
         self.check_real(nM, t_index, 'electronic population')
         self.dynamics['nM'][t_index] = np.real(nM)
-        gRR = np.zeros(self.Q0+1, dtype=complex)
-        if np.allclose(nPh, 0.0):
-            g1 = np.zeros(self.Nk, dtype=complex)
-        else:
-            g1 = a_dag_a[self.Q0,:,self.Q0,self.Q0]/np.sqrt(nPh[self.Q0,:] * nPh[self.Q0,self.Q0])
-            for n in range(self.Q0+1):
-                numer = a_dag_a[self.Q0, self.Q0+n, self.Q0, self.Q0-n]
-                denom = np.sqrt(nPh[self.Q0, self.Q0+n] * nPh[self.Q0, self.Q0-n])
-                gRR[n] = numer / denom
+        g1 = np.zeros(self.Q0+1, dtype=complex)
+        for R in range(self.Q0+1):
+            g1[R] = self.g_circ(a_dag_a, R)
         self.dynamics['g1'][t_index] = g1
-        self.dynamics['g1RR'][t_index] = gRR
+
+    def ring_indices(self, R, tol=0.5):
+        cy, cx = self.Q0, self.Q0
+        y, x = np.indices((self.Nk, self.Nk))
+        dist = np.sqrt((y - cy)**2 + (x - cx)**2)
+        ys, xs = np.where(np.abs(dist - R) < tol)
+        # sort by angle so antipodal points are half array length apart
+        angles = np.arctan2(ys - cy, xs - cx)
+        order = np.argsort(angles)
+        # Note in retrospect it was weird to chose 'x' for the first coordinate
+        # and 'y' as the second (numpy convention is rows,cols); better keep
+        # here and in g_circ to be consistent with eoms etc.
+        return xs[order], ys[order]
+
+    INNER_ABS = False
+    def g_circ(self, a_dag_a, R):
+        idx = self.ring_indices(R) # idx must be ordered by angle
+        num_points = len(idx[0])
+        if num_points % 2 == 1: # num_points must be even
+            idx = (idx[0][:-1], idx[1][:-1])
+            num_points -= 1
+        hlen = num_points // 2
+        tot = 0.0
+        N_pairs = 0
+        for i in range(0, hlen):
+            ix1, iy1 = idx[0][i], idx[1][i]
+            ix2, iy2 = idx[0][i+hlen], idx[1][i+hlen]
+            numer = a_dag_a[ix1, iy1, ix2, iy2]
+            if self.INNER_ABS:
+                numer = np.abs(numer)
+            denom = np.sqrt(a_dag_a[ix1, iy1, ix1, iy1] * a_dag_a[ix2, iy2, ix2, iy2])
+            if not np.isclose(np.abs(denom), 0.0, atol=1e-8):
+                N_pairs += 1
+                tot += numer/denom
+        return tot/N_pairs if N_pairs > 0 else 0.0
 
     WARN_REAL = {}
     def check_real(self, step, arr, name):
@@ -386,12 +412,13 @@ def plot_input_output(results_list,
     nK_final = np.zeros((num_pumps, Nk, Nk), dtype=float)
     nM_final = np.zeros((num_pumps, Nk, Nk), dtype=float)
     nK_final = np.zeros((num_pumps, Nk, Nk), dtype=float)
-    g1_final = np.zeros((num_pumps, Nk), dtype=complex)
-    g1RR_final = np.zeros((num_pumps, params.Q0+1), dtype=complex)
+    g1_final = np.zeros((num_pumps, params.Q0+1), dtype=complex)
     #adaga_final = np.zeros((num_pumps, Nk, Nk), dtype=complex) 
     #adaga_final_mask = np.zeros((num_pumps, Nk, Nk), dtype=bool) 
     fig, axes = plt.subplots(3, 2, figsize=(8,10), constrained_layout=True, sharex=False)# sharex='col')
     fig2d, axes2d = plt.subplots(num_pumps, 2, figsize=(8,3*num_pumps), constrained_layout=True, sharex=False, sharey=False)
+    if num_pumps==1:
+        axes2d = axes2d[np.newaxis, :]
     figk, axesk = plt.subplots(2,2, figsize=(8,6), constrained_layout=True)
     select_indices = np.round(np.linspace(0, num_pumps-1, max_nph_curves)).astype(int)
     pump_title = r'$\Gamma_\uparrow(0)/\Gamma_\downarrow$'
@@ -402,14 +429,12 @@ def plot_input_output(results_list,
                             interpolation='none', extent=extent,
                             cmap=cm)
     for i, pump in enumerate(pump_strengths):
-        logger.info(f'On pump {i+1} of {num_pumps}')
         params.pump_strength = pump
         results = results_list[i]
         ph_final[i] = results['dynamics']['nP'][-1]
         nK_final[i] = results['dynamics']['nK'][-1] # already fftshifted to ascending order
         nM_final[i] = results['dynamics']['nM'][-1]
         g1_final[i] = results['dynamics']['g1'][-1]
-        g1RR_final[i, :] = results['dynamics']['g1RR'][-1, :]
         if i not in select_indices:
             continue
         if normalise:
@@ -437,8 +462,7 @@ def plot_input_output(results_list,
             im = myim(axesk[0,1], y3, Kextent)
             cbar = figk.colorbar(im, ax=axesk[0,1], aspect=20)
             axesk[0,1].set_title(r'$n_{kk}\quad($' + pump_title + r'$=$' + pump_str +r')')
-        axes[2,1].plot(np.abs(g1_final[i,htc.Q0:]), label=pump_str)
-        axes[2,0].plot(np.abs(g1RR_final[i,:]), label=pump_str)
+        axes[2,1].plot(np.abs(g1_final[i,:]), label=pump_str)
         axesk[0,0].plot(Ks, y3[params.Q0,:], label=pump_str)
     #htc.plot_dispersion_pump()
     if xlims is not None:
@@ -471,21 +495,22 @@ def plot_input_output(results_list,
     axes[1,0].set_title(r'$ \sum_n\left(N_Ep^\uparrow_n\right)$')
     axes[1,1].set_title(r'$p^\uparrow_n$')
     axes[2,1].set_title(r'$|g^{(1)}(R)|$')
-    axes[2,1].set_title(r'$|g^{(1)}(R)|$')
-    axes[2,0].set_title(r'$|g^{(1)}(R,-R)|$')
     axes[0,0].loglog(ratios, ph_tots)
     axes[1,0].loglog(ratios, nM_tots)
     #axes[2,0].plot(ratios, np.abs(g1_final[:,htc.Q0]))
     #axes[2,0].set_xscale('log')
     axes[1,1].legend(title=pump_title)
     axes[2,1].legend(title=pump_title)
-    axes[2,0].legend(title=pump_title)
+    #axes[2,0].legend(title=pump_title)
     axes[0,1].legend(title=pump_title)
     axesk[0,0].legend(title=pump_title)
     fig.suptitle(r'$N_k={Nk}\ N_E={NE}\ g={g}\ \kappa={kappa}\ \Gamma^\downarrow={Gam_down:.2g}\  t={t}\ \gamma^{{\rm{{ee}}}}={gam_ee}$'.format(**params.__dict__))
-    fig.savefig('figures/2d_real_space_input_output.png', bbox_inches='tight', dpi=350)
+    fp1 = 'figures/2d_real_space_input_output.png'
+    fp2 = 'figures/2d_real_space_steady_state.png'
+    fig.savefig(fp1, bbox_inches='tight', dpi=350)
     #figk.savefig('figures/2d_real_space_cauchy.png', bbox_inches='tight', dpi=350)
-    fig2d.savefig('figures/2d_real_space_steady_state.png', bbox_inches='tight', dpi=350)
+    fig2d.savefig(fp2, bbox_inches='tight', dpi=350)
+    logger.info(f'Figures saved to {fp1}, {fp2}')
     plt.close(fig)
     plt.close(figk)
     plt.close(fig2d)
@@ -513,14 +538,16 @@ if __name__ == '__main__':
     results_list = []
     #pump_strengths = [0.005, 0.01, 0.05, 0.1, 0.25]
     pump_strengths = [0.00125, 0.005, 0.01, 0.02, 0.04]
-    for pump in pump_strengths:
+    num_pumps = len(pump_strengths)
+    for i, pump in enumerate(pump_strengths):
+        logger.info(f'On pump {i+1} of {num_pumps}')
         Nk = 2*params.Q0 + 1 # side length
         num_sites = Nk**2
         params.pump_strength = pump
         htc = RealHTC(params)
         #fp = 'data/2d/w0{}Q0{}_pump{}.pkl'.format(params.omega_0, params.Q0, pump)
         fp = f'data/2d/Nk{num_sites}NE{params.NE}w0{params.omega_0}g{params.g}t{params.t}kappa{params.kappa}Gamz{params.Gam_z}Gamd{params.Gam_down}gamee{params.gam_ee}width{params.pump_width}_pump{pump}.pkl'
-        print(pump, fp)
+        logger.info(f'Pump={pump}, Output file={fp}')
         if os.path.exists(fp):
             with open(fp, 'rb') as fb:
                 results = pickle.load(fb)
